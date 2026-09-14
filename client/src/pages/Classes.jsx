@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt } from '../api.js';
+import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours } from '../api.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -37,7 +37,7 @@ export default function Classes() {
         coach_id: form.coach_id ? Number(form.coach_id) : null,
         venue_id: form.venue_id ? Number(form.venue_id) : null,
         start_at: isoAt(form.date, form.hour),
-        end_at: isoAt(form.date, form.hour + Number(form.duration)),
+        end_at: isoAddHours(form.date, form.hour, Number(form.duration)),
         capacity: Number(form.capacity),
         cost_sessions: 1,
       });

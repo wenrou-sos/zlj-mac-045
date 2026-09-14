@@ -13,7 +13,7 @@ export default function Schedules() {
   const [coaches, setCoaches] = useState([]);
   const [startOffset, setStartOffset] = useState(0);
   const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({ coach_id: '', date: todayStr(), start_time: '09:00', end_time: '17:00', shift_type: 'normal' });
+  const [form, setForm] = useState({ coach_id: '', work_date: todayStr(), start_time: '09:00', end_time: '17:00', shift_type: 'normal' });
 
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDaysStr(todayStr(), startOffset + i)), [startOffset]);
 
@@ -49,7 +49,7 @@ export default function Schedules() {
         <button className="btn" onClick={() => setStartOffset((d) => d + 7)}>下一周 →</button>
         <button className="btn" onClick={() => setStartOffset(0)}>本周</button>
         <button className="btn primary" style={{ marginLeft: 'auto' }}
-          onClick={() => { setForm({ coach_id: coaches[0]?.id || '', date: days[0], start_time: '09:00', end_time: '17:00', shift_type: 'normal' }); setModal(true); }}>
+          onClick={() => { setForm({ coach_id: coaches[0]?.id || '', work_date: days[0], start_time: '09:00', end_time: '17:00', shift_type: 'normal' }); setModal(true); }}>
           + 新增排班
         </button>
       </div>
@@ -92,7 +92,7 @@ export default function Schedules() {
               </select>
             </label>
             <label className="field">日期
-              <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label>
+              <input type="date" value={form.work_date} onChange={(e) => setForm({ ...form, work_date: e.target.value })} /></label>
             <label className="field">上班时间
               <select value={form.start_time} onChange={(e) => setForm({ ...form, start_time: e.target.value, end_time: END_AFTER[e.target.value] })}>
                 {TIMES.map((t) => <option key={t}>{t}</option>)}

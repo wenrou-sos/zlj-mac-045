@@ -48,6 +48,12 @@ export function addDaysStr(base, n) {
 export function isoAt(dateStr, hh, mm = 0) {
   return new Date(`${dateStr}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`).toISOString();
 }
+// 在某天某时基础上追加小时数（支持 1.5 这类小数，跨小时/跨日自动进位）
+export function isoAddHours(dateStr, hh, addHours) {
+  const base = new Date(`${dateStr}T00:00:00`);
+  base.setMinutes(hh * 60 + Math.round(addHours * 60));
+  return base.toISOString();
+}
 
 // 会员卡状态 -> 展示
 export const CARD_STATUS = {

@@ -2,6 +2,7 @@
   "name": "powergym",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "PowerGym 健身场馆管理系统（会员卡 / 课程预约 / 器械场地 / 教练排班 / 到店核销）",
   "scripts": {
     "install:all": "npm --prefix server install && npm --prefix client install",

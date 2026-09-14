@@ -1,0 +1,13 @@
+{
+  "name": "powergym",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PowerGym 健身场馆管理系统（会员卡 / 课程预约 / 器械场地 / 教练排班 / 到店核销）",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "seed": "npm --prefix server run seed",
+    "dev:server": "npm --prefix server start",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "node scripts/dev.js"
+  }
+}

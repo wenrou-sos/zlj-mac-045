@@ -32,7 +32,8 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
   // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
+  await query(`TRUNCATE settlement_items, settlement_adjustments, settlement_batches,
+    class_reassignments, coach_leaves, reminders, renewals, bookings, classes, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
@@ -134,13 +135,13 @@ export async function seedData() {
     );
   }
 
-  // 7. 教练排班：最近 7 天 ~ 未来 14 天
+  // 7. 教练排班：上月（供结算演示）~ 未来 14 天
   const shifts = [
     ['09:00', '17:00', 'normal'],
     ['13:00', '21:00', 'evening'],
     ['07:00', '12:00', 'morning'],
   ];
-  for (let d = -7; d <= 14; d++) {
+  for (let d = -45; d <= 14; d++) {
     for (let coachId = 1; coachId <= 6; coachId++) {
       // 教练每周休息一天（id 偏移）
       if (weekdayOf(d) === (coachId % 7)) continue;
@@ -178,6 +179,41 @@ export async function seedData() {
   // 随机取消一节课（未来）
   const futureClasses = classIds.slice(-10);
   await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(futureClasses)]);
+
+  // 8.5 上月课程：-45 ~ -32 天，每天 2~3 节（均已结束，用于课时结算演示）
+  const lastMonthIds = [];
+  for (let d = -45; d <= -32; d++) {
+    const count = randInt(2, 3);
+    const chosenHours = [...hours].sort(() => Math.random() - 0.5).slice(0, count).sort((a, b) => a - b);
+    for (const h of chosenHours) {
+      const [title, coachId, venueId, cap, cost] = pick(classTemplates);
+      const r = await query(
+        `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
+         VALUES($1,$2,$3,$4,$5,$6,$7,'finished') RETURNING id`,
+        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, cost]
+      );
+      classIds.push(r.rows[0].id);
+      lastMonthIds.push(r.rows[0].id);
+    }
+  }
+  // 上月随机取消一节（结算单里"取消"类别的样例）
+  await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(lastMonthIds)]);
+  // 保证王磊(id=1)在 -40~-38 请假窗口内每天有 1 节课（12 点不与现有排课冲突；
+  // 结算演示：最早一节留作"请假不计费"，其余改派出去）
+  for (const d of [-40, -39, -38]) {
+    const exist = await query(
+      `SELECT 1 FROM classes WHERE coach_id=1 AND start_at >= $1 AND start_at <= $2`,
+      [classTs(d, 0), classTs(d, 23, 59)]
+    );
+    if (exist.rows.length === 0) {
+      const r = await query(
+        `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
+         VALUES('杠铃塑形',1,4,$1,$2,12,1,'finished') RETURNING id`,
+        [classTs(d, 12), classTs(d, 13)]
+      );
+      classIds.push(r.rows[0].id);
+    }
+  }
 
   // 9. 预约：给每节课随机 0~80% 上座率；过去的课大部分已核销
   const memberIds = Array.from({ length: 18 }, (_, i) => i + 1);
@@ -247,6 +283,62 @@ export async function seedData() {
   await query(`UPDATE membership_cards SET remaining=2, status='active' WHERE card_no='VIP2026003'`);
   await query(`UPDATE membership_cards SET remaining=1, status='active' WHERE card_no='VIP2026016'`);
 
+  // 9.6 请假与改派样例
+  // (a) 上月：王磊(id=1) 请假 3 天。窗口内第一节课不改派（结算时落入"请假不计费"），其余改派给合规教练
+  const lv = await query(
+    `INSERT INTO coach_leaves(coach_id, start_at, end_at, reason) VALUES(1,$1,$2,'家中有事') RETURNING id`,
+    [classTs(-40, 0), classTs(-38, 23, 59)]
+  );
+  const leaveId = lv.rows[0].id;
+  const affected = await query(
+    `SELECT * FROM classes WHERE coach_id=1 AND status='finished'
+       AND start_at >= $1 AND start_at <= $2 ORDER BY start_at`,
+    [classTs(-40, 0), classTs(-38, 23, 59)]
+  );
+  for (let i = 1; i < affected.rows.length; i++) {
+    const cls = affected.rows[i];
+    // 找代课教练：当天排班覆盖课程时段、此时段无课
+    const sub = await query(
+      `SELECT c.id FROM coaches c
+       WHERE c.id <> 1 AND c.status='active'
+         AND EXISTS (SELECT 1 FROM coach_schedules s
+           WHERE s.coach_id=c.id AND s.work_date = $1::timestamptz::date
+             AND s.start_time <= to_char($1::timestamptz,'HH24:MI')
+             AND s.end_time   >= to_char($2::timestamptz,'HH24:MI'))
+         AND NOT EXISTS (SELECT 1 FROM classes x
+           WHERE x.coach_id=c.id AND x.status IN ('open','finished')
+             AND x.start_at < $2 AND x.end_at > $1)
+       ORDER BY c.id LIMIT 1`,
+      [cls.start_at, cls.end_at]
+    );
+    if (sub.rows.length === 0) continue;
+    const subId = sub.rows[0].id;
+    await query(`UPDATE classes SET original_coach_id=1, coach_id=$2 WHERE id=$1`, [cls.id, subId]);
+    await query(
+      `INSERT INTO class_reassignments(class_id, leave_id, from_coach_id, to_coach_id, note)
+       VALUES($1,$2,1,$3,$4)`,
+      [cls.id, leaveId, subId, `请假改派（请假单 #${leaveId}）`]
+    );
+  }
+
+  // (b) 未来：张猛(id=3) 请假 2 天（active），课程不改派，留给用户在界面上演练批量改派
+  await query(
+    `INSERT INTO coach_leaves(coach_id, start_at, end_at, reason) VALUES(3,$1,$2,'外出培训')`,
+    [classTs(2, 0), classTs(3, 23, 59)]
+  );
+  // 确保请假窗口内至少有一节张猛的课
+  const hasCls = await query(
+    `SELECT 1 FROM classes WHERE coach_id=3 AND status='open' AND start_at >= $1 AND start_at <= $2`,
+    [classTs(2, 0), classTs(3, 23, 59)]
+  );
+  if (hasCls.rows.length === 0) {
+    await query(
+      `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions)
+       VALUES('动感单车',3,1,$1,$2,20,1)`,
+      [classTs(2, 12), classTs(2, 13)]
+    );
+  }
+
   // 10. 生成提醒
   await query(
     `INSERT INTO reminders(member_id, card_id, type, message)
@@ -272,7 +364,7 @@ export async function seedData() {
   );
 
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders','coach_leaves','class_reassignments']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

@@ -71,14 +71,20 @@ CREATE TABLE IF NOT EXISTS classes (
   id            SERIAL PRIMARY KEY,
   title         VARCHAR(80) NOT NULL,       -- 动感单车 / 普拉提 ...
   coach_id      INTEGER REFERENCES coaches(id) ON DELETE SET NULL,
+  original_coach_id INTEGER REFERENCES coaches(id) ON DELETE SET NULL, -- 改派前的原教练
   venue_id      INTEGER REFERENCES venues(id) ON DELETE SET NULL,
   start_at      TIMESTAMPTZ NOT NULL,
   end_at        TIMESTAMPTZ NOT NULL,
   capacity      INTEGER NOT NULL DEFAULT 10,
   cost_sessions INTEGER NOT NULL DEFAULT 1, -- 消耗课次
   status        VARCHAR(10) DEFAULT 'open',  -- open / canceled / finished
+  locked_period VARCHAR(7),                  -- 已结算锁定的账期 '2026-09'，NULL=未锁定
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- 老库升级：补充 classes 新列（幂等）
+ALTER TABLE classes ADD COLUMN IF NOT EXISTS original_coach_id INTEGER REFERENCES coaches(id) ON DELETE SET NULL;
+ALTER TABLE classes ADD COLUMN IF NOT EXISTS locked_period VARCHAR(7);
 
 -- 预约
 CREATE TABLE IF NOT EXISTS bookings (
@@ -121,8 +127,69 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- 教练请假时段
+CREATE TABLE IF NOT EXISTS coach_leaves (
+  id            SERIAL PRIMARY KEY,
+  coach_id      INTEGER NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  start_at      TIMESTAMPTZ NOT NULL,
+  end_at        TIMESTAMPTZ NOT NULL,
+  reason        VARCHAR(255),
+  status        VARCHAR(10) DEFAULT 'active', -- active / canceled（销假）
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 课程改派记录（谁 -> 谁，可关联请假单）
+CREATE TABLE IF NOT EXISTS class_reassignments (
+  id            SERIAL PRIMARY KEY,
+  class_id      INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  leave_id      INTEGER REFERENCES coach_leaves(id) ON DELETE SET NULL,
+  from_coach_id INTEGER REFERENCES coaches(id) ON DELETE SET NULL,
+  to_coach_id   INTEGER NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  note          VARCHAR(255),
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 课时结算批次：一个自然月一期，生成后该时段课程锁定
+CREATE TABLE IF NOT EXISTS settlement_batches (
+  id            SERIAL PRIMARY KEY,
+  period        VARCHAR(7) UNIQUE NOT NULL,   -- '2026-09'
+  start_date    DATE NOT NULL,                -- 当月 1 号
+  end_date      DATE NOT NULL,                -- 次月 1 号（开区间）
+  class_count   INTEGER DEFAULT 0,            -- 纳入结算的课程节数
+  total_amount  NUMERIC(12,2) DEFAULT 0,      -- 本期应付合计（含调整冲抵）
+  operator      VARCHAR(50) DEFAULT '前台',
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 结算明细：每节课一行 + 调整冲抵行（生成后只读，不再修改）
+CREATE TABLE IF NOT EXISTS settlement_items (
+  id            SERIAL PRIMARY KEY,
+  batch_id      INTEGER NOT NULL REFERENCES settlement_batches(id) ON DELETE CASCADE,
+  coach_id      INTEGER REFERENCES coaches(id) ON DELETE SET NULL,
+  class_id      INTEGER REFERENCES classes(id) ON DELETE SET NULL,
+  category      VARCHAR(16) NOT NULL,  -- normal/substitute/canceled/no_show/leave_excluded/adjustment
+  hours         NUMERIC(6,2) DEFAULT 0,
+  amount        NUMERIC(10,2) DEFAULT 0, -- 计费金额（取消/未到店/请假排除为 0，调整可正可负）
+  note          VARCHAR(255)
+);
+
+-- 结算后调整记录：锁定期间的更正，冲抵到后续账期，不改已出数字
+CREATE TABLE IF NOT EXISTS settlement_adjustments (
+  id            SERIAL PRIMARY KEY,
+  coach_id      INTEGER NOT NULL REFERENCES coaches(id) ON DELETE CASCADE,
+  class_id      INTEGER REFERENCES classes(id) ON DELETE SET NULL,
+  amount        NUMERIC(10,2) NOT NULL,       -- 正=补发 负=扣减
+  reason        VARCHAR(255) NOT NULL,
+  status        VARCHAR(10) DEFAULT 'pending',-- pending / applied（已并入某期结算）
+  applied_period VARCHAR(7),
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_leaves_coach ON coach_leaves(coach_id);
+CREATE INDEX IF NOT EXISTS idx_reassign_class ON class_reassignments(class_id);
+CREATE INDEX IF NOT EXISTS idx_items_batch ON settlement_items(batch_id);

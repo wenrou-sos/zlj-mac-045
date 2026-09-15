@@ -85,3 +85,12 @@ export const EQUIP_STATUS = {
   maintenance: { text: '维修中', cls: 'warn' },
   scrapped: { text: '已报废', cls: 'muted' },
 };
+// 课时结算分类 -> 展示
+export const SETTLE_CATEGORY = {
+  normal: { text: '正常授课', cls: 'ok' },
+  substitute: { text: '代课', cls: 'info' },
+  canceled: { text: '已取消', cls: 'muted' },
+  no_show: { text: '未到店', cls: 'warn' },
+  leave_excluded: { text: '请假不计费', cls: 'danger' },
+  adjustment: { text: '调整冲抵', cls: 'info' },
+};

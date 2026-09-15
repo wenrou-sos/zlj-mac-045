@@ -14,6 +14,8 @@ export default function Classes() {
   const [showCreate, setShowCreate] = useState(false);
   const [detail, setDetail] = useState(null);
   const [detailBookings, setDetailBookings] = useState([]);
+  const [reassignTarget, setReassignTarget] = useState(null); // 待改派的课程
+  const [reassignCoachId, setReassignCoachId] = useState('');
   const [form, setForm] = useState({
     title: TITLES[0], coach_id: '', venue_id: '', date: todayStr(),
     hour: 19, duration: 1, capacity: 10, cost_sessions: 1,
@@ -62,6 +64,16 @@ export default function Classes() {
     setDetailBookings(await api.get(`/bookings?class_id=${c.id}`));
   }
 
+  async function submitReassign() {
+    if (!reassignCoachId) return notify('请选择代课教练', 'error');
+    try {
+      await api.post(`/classes/${reassignTarget.id}/reassign`, { to_coach_id: Number(reassignCoachId) });
+      notify('改派成功', 'success');
+      setReassignTarget(null);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+
   const selectedDate = addDaysStr(todayStr(), dayOffset);
   const dayList = list
     .filter((c) => localDateOf(c.start_at) === selectedDate)
@@ -94,9 +106,13 @@ export default function Classes() {
                 {c.status === 'canceled' && <span className="badge danger">已取消</span>}
                 {c.status === 'finished' && <span className="badge muted">已结束</span>}
                 {full && c.status === 'open' && <span className="badge warn">满员</span>}
+                {c.locked_period && <span className="badge muted">🔒 {c.locked_period} 已结算</span>}
               </div>
               <div className="meta">
-                <span>🏋️ {c.coach_name || '待定教练'}</span>
+                <span>🏋️ {c.coach_name || '待定教练'}
+                  {c.original_coach_name && c.original_coach_id !== c.coach_id &&
+                    <span className="badge info" style={{ marginLeft: 6 }}>代课 · 原 {c.original_coach_name}</span>}
+                </span>
                 <span>🏟️ {c.venue_name || '待定场地'}</span>
               </div>
               <div className={`cap-bar ${full ? 'full' : ''}`}><div style={{ width: `${pct}%` }}></div></div>
@@ -104,7 +120,9 @@ export default function Classes() {
                 <span className="muted" style={{ fontSize: 12 }}>预约 {c.booked_count}/{c.capacity} · 已核销 {c.checked_count}</span>
                 <span style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm" onClick={() => openDetail(c)}>预约名单</button>
-                  {c.status === 'open' && new Date(c.start_at) > new Date() &&
+                  {c.status === 'open' && !c.locked_period &&
+                    <button className="btn sm" onClick={() => { setReassignTarget(c); setReassignCoachId(''); }}>改派</button>}
+                  {c.status === 'open' && !c.locked_period && new Date(c.start_at) > new Date() &&
                     <button className="btn sm danger" onClick={() => cancelClass(c)}>取消课程</button>}
                 </span>
               </div>
@@ -190,9 +208,31 @@ export default function Classes() {
             </table>
           </div>
           <div className="form-actions">
-            {detail.status === 'open' && new Date(detail.start_at) > new Date() &&
+            {detail.status === 'open' && !detail.locked_period && new Date(detail.start_at) > new Date() &&
               <button className="btn danger" onClick={() => cancelClass(detail)} style={{ marginRight: 'auto' }}>取消整节课（退次）</button>}
             <button className="btn" onClick={() => setDetail(null)}>关闭</button>
+          </div>
+        </Modal>
+      )}
+
+      {reassignTarget && (
+        <Modal title={`改派「${reassignTarget.title}」(${fmtTime(reassignTarget.start_at)})`} onClose={() => setReassignTarget(null)}>
+          <p className="muted" style={{ marginBottom: 14, fontSize: 12.5 }}>
+            现任教练：{reassignTarget.coach_name || '待定'}。提交时校验代课教练当天排班、撞课与请假冲突。
+          </p>
+          <div className="form-grid">
+            <label className="field">代课教练
+              <select value={reassignCoachId} onChange={(e) => setReassignCoachId(e.target.value)}>
+                <option value="">请选择</option>
+                {coaches.filter((c) => c.status === 'active' && c.id !== reassignTarget.coach_id).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}（{c.specialty}）</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setReassignTarget(null)}>取消</button>
+            <button className="btn primary" onClick={submitReassign}>确认改派</button>
           </div>
         </Modal>
       )}

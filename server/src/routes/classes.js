@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { query } from '../db.js';
+import { query, withTransaction } from '../db.js';
+import { reassignClass } from '../reassign.js';
 
 const router = Router();
 
@@ -9,12 +10,13 @@ router.get('/', async (req, res, next) => {
     const from = req.query.from || new Date(Date.now() - 7 * 86400e3).toISOString();
     const to = req.query.to || new Date(Date.now() + 14 * 86400e3).toISOString();
     const r = await query(`
-      SELECT cl.*, co.name AS coach_name, v.name AS venue_name,
+      SELECT cl.*, co.name AS coach_name, oc.name AS original_coach_name, v.name AS venue_name,
         (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id
           AND b.status IN ('booked','checked')) AS booked_count,
         (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id AND b.status='checked') AS checked_count
       FROM classes cl
       LEFT JOIN coaches co ON co.id=cl.coach_id
+      LEFT JOIN coaches oc ON oc.id=cl.original_coach_id
       LEFT JOIN venues v ON v.id=cl.venue_id
       WHERE cl.start_at >= $1 AND cl.start_at <= $2
       ORDER BY cl.start_at`, [from, to]);
@@ -32,6 +34,15 @@ router.post('/', async (req, res, next) => {
     const cost_sessions = Number(req.body.cost_sessions) || 1;
     if (!title || !start_at || !end_at) return res.status(400).json({ error: '课程名和时间必填' });
     if (new Date(end_at) <= new Date(start_at)) return res.status(400).json({ error: '结束时间必须晚于开始时间' });
+
+    // 已结算锁定的账期内不允许补排课程
+    const locked = await query(
+      `SELECT period FROM settlement_batches WHERE $1::timestamptz >= start_date AND $1::timestamptz < end_date LIMIT 1`,
+      [start_at]
+    );
+    if (locked.rows.length > 0) {
+      return res.status(409).json({ error: `${locked.rows[0].period} 期已结算锁定，不能在该时段内排课` });
+    }
 
     if (venue_id) {
       const venue = await query(`SELECT capacity, status FROM venues WHERE id=$1`, [venue_id]);
@@ -65,6 +76,9 @@ router.post('/:id/cancel', async (req, res, next) => {
   try {
     const cls = await query(`SELECT * FROM classes WHERE id=$1`, [req.params.id]);
     if (cls.rows.length === 0) return res.status(404).json({ error: '课程不存在' });
+    if (cls.rows[0].locked_period) {
+      return res.status(409).json({ error: `该课程已进入 ${cls.rows[0].locked_period} 期结算并锁定，不能直接取消；如需更正请创建结算调整记录` });
+    }
     if (new Date(cls.rows[0].start_at) < new Date()) {
       return res.status(400).json({ error: '已开始的课程不能取消' });
     }
@@ -90,6 +104,18 @@ router.post('/:id/cancel', async (req, res, next) => {
       }
     }
     res.json({ ok: true, affected: bookings.rows.length });
+  } catch (e) { next(e); }
+});
+
+// 单节课改派（校验排班覆盖/撞课/代课人请假，与请假批量改派同一套规则）
+router.post('/:id/reassign', async (req, res, next) => {
+  try {
+    const toCoachId = Number(req.body.to_coach_id);
+    if (!toCoachId) return res.status(400).json({ error: '请选择代课教练' });
+    const reassignment = await withTransaction((tx) =>
+      reassignClass(tx, Number(req.params.id), toCoachId, null, req.body.note || null)
+    );
+    res.json({ ok: true, reassignment });
   } catch (e) { next(e); }
 });
 

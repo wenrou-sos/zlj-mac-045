@@ -16,6 +16,9 @@ import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
+import leavesRouter from './routes/leaves.js';
+import reassignmentsRouter from './routes/reassignments.js';
+import settlementsRouter from './routes/settlements.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -34,6 +37,9 @@ app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
+app.use('/api/leaves', leavesRouter);
+app.use('/api/reassignments', reassignmentsRouter);
+app.use('/api/settlements', settlementsRouter);
 
 // 重置样例数据
 app.post('/api/dev/reseed', async (req, res, next) => {
@@ -45,7 +51,7 @@ app.post('/api/dev/reseed', async (req, res, next) => {
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: err.message || '服务器内部错误' });
+  res.status(err.status || 500).json({ error: err.message || '服务器内部错误' });
 });
 
 async function init() {

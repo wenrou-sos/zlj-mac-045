@@ -11,6 +11,8 @@ import Classes from './pages/Classes.jsx';
 import Bookings from './pages/Bookings.jsx';
 import Coaches from './pages/Coaches.jsx';
 import Schedules from './pages/Schedules.jsx';
+import Leaves from './pages/Leaves.jsx';
+import Settlements from './pages/Settlements.jsx';
 import Venues from './pages/Venues.jsx';
 import Checkins from './pages/Checkins.jsx';
 import Reminders from './pages/Reminders.jsx';
@@ -42,6 +44,8 @@ const nav = [
   { to: '/bookings', label: '预约管理', icon: '📝' },
   { to: '/coaches', label: '教练管理', icon: '🏋️' },
   { to: '/schedules', label: '教练排班', icon: '⏰' },
+  { to: '/leaves', label: '请假与改派', icon: '🔄' },
+  { to: '/settlements', label: '课时结算', icon: '💰' },
   { group: '场地器械' },
   { to: '/venues', label: '场地与器械', icon: '🏟️' },
 ];
@@ -84,6 +88,8 @@ export default function App() {
           <Route path="/bookings" element={<Bookings />} />
           <Route path="/coaches" element={<Coaches />} />
           <Route path="/schedules" element={<Schedules />} />
+          <Route path="/leaves" element={<Leaves />} />
+          <Route path="/settlements" element={<Settlements />} />
           <Route path="/venues" element={<Venues />} />
         </Routes>
       </main>

@@ -271,3 +271,42 @@ label.field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px
 .chart-bars .lab { font-size: 11px; color: var(--text2); }
 .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text2); }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+
+/* ---------- 场地 7 天可用性视图 ---------- */
+.week-table th, .week-table td { padding: 8px; }
+.week-table .venue-cell { white-space: nowrap; font-weight: 600; min-width: 110px; }
+.week-table .venue-cell .muted { font-weight: 400; font-size: 11.5px; }
+.vday-bar {
+  position: relative;
+  height: 24px;
+  min-width: 96px;
+  background: rgba(53,208,127,.10);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.vday-bar .seg { position: absolute; top: 0; bottom: 0; min-width: 2px; }
+.vday-bar .seg.class { background: var(--accent); }
+.vday-bar .seg.block {
+  background: repeating-linear-gradient(45deg,
+    rgba(242,85,85,.75) 0 4px, rgba(242,85,85,.30) 4px 8px);
+}
+.vday-bar .seg.closed { background: #39424f; left: 0; right: 0; }
+.vday-hours { display: flex; justify-content: space-between; font-size: 10px; color: #5c6878; margin-top: 2px; }
+
+/* ---------- 冲突课程处理 ---------- */
+.conflict-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--panel2);
+}
+.conflict-item .head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; margin-bottom: 8px; }
+.conflict-item .ops { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--text2); }
+.conflict-item .ops label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.conflict-item .ops input[type="date"], .conflict-item .ops select { padding: 5px 8px; font-size: 12px; }
+.batch-result { max-height: 260px; overflow-y: auto; margin-top: 12px; }
+.batch-result .skip { color: var(--warn); font-size: 12.5px; }
+.weekday-picker { display: flex; gap: 6px; flex-wrap: wrap; }
+.weekday-picker .btn { padding: 5px 11px; }

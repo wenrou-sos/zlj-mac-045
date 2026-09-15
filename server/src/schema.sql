@@ -110,6 +110,36 @@ CREATE TABLE IF NOT EXISTS renewals (
   operator      VARCHAR(50) DEFAULT '前台'
 );
 
+-- 场地不可用时段：每周固定闭馆（weekly）/ 一次性日期区间（once）
+-- 与 venues.status 整停开关叠加生效，任一命中即不可用
+CREATE TABLE IF NOT EXISTS venue_blocks (
+  id          SERIAL PRIMARY KEY,
+  venue_id    INTEGER NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+  kind        VARCHAR(10) NOT NULL,          -- weekly / once
+  weekday     INTEGER,                       -- weekly 专用：0=周日 … 6=周六
+  start_time  TIME,                          -- weekly 专用：每日闭馆开始
+  end_time    TIME,                          -- weekly 专用：每日闭馆结束
+  start_at    TIMESTAMPTZ,                   -- once 专用：区间开始
+  end_at      TIMESTAMPTZ,                   -- once 专用：区间结束
+  reason      VARCHAR(100) NOT NULL,         -- 换水 / 装修 / 节假日闭馆 …
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- 课程候补队列（满员后排队，空位释放时按顺序递补）
+CREATE TABLE IF NOT EXISTS waitlists (
+  id          SERIAL PRIMARY KEY,
+  class_id    INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  member_id   INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  status      VARCHAR(10) DEFAULT 'waiting', -- waiting / promoted / canceled / failed
+  note        VARCHAR(255),
+  created_at  TIMESTAMPTZ DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+
+-- 同一会员对同一节课只允许一条排队中的候补
+CREATE UNIQUE INDEX IF NOT EXISTS uq_waitlist_waiting
+  ON waitlists(class_id, member_id) WHERE status = 'waiting';
+
 -- 到期 / 低余额提醒
 CREATE TABLE IF NOT EXISTS reminders (
   id            SERIAL PRIMARY KEY,
@@ -126,3 +156,5 @@ CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_venue_blocks_venue ON venue_blocks(venue_id);
+CREATE INDEX IF NOT EXISTS idx_waitlists_class ON waitlists(class_id);

@@ -37,6 +37,62 @@ router.put('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// 未来 7 天场地视图：每块场地每天的课程占用与不可用时段（前端按天裁剪渲染）
+router.get('/week', async (req, res, next) => {
+  try {
+    const start = /^\d{4}-\d{2}-\d{2}$/.test(req.query.start || '') ? req.query.start : null;
+    const dayRows = (await query(`
+      SELECT to_char(d.day, 'YYYY-MM-DD') AS day,
+             COALESCE($1::date, CURRENT_DATE)::text AS start
+      FROM generate_series(COALESCE($1::date, CURRENT_DATE), COALESCE($1::date, CURRENT_DATE) + 6, interval '1 day') d(day)
+      ORDER BY 1`, [start])).rows;
+    const days = dayRows.map((r) => r.day);
+    const s = dayRows[0].start;
+
+    const [venues, classes, weekly, once] = await Promise.all([
+      query(`SELECT * FROM venues ORDER BY id`),
+      query(`
+        SELECT cl.id, cl.venue_id, cl.title, cl.start_at, cl.end_at, cl.capacity,
+          co.name AS coach_name,
+          (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id AND b.status IN ('booked','checked')) AS booked_count
+        FROM classes cl LEFT JOIN coaches co ON co.id=cl.coach_id
+        WHERE cl.status='open'
+          AND cl.start_at < ($1::date + 7)::timestamptz AND cl.end_at > $1::date::timestamptz
+        ORDER BY cl.start_at`, [s]),
+      // 每周固定闭馆展开成 7 天内的具体段
+      query(`
+        SELECT u.venue_id, u.id, u.reason, u.weekday, u.start_time, u.end_time,
+          (d.day::date + u.start_time)::timestamptz AS start_at,
+          (d.day::date + u.end_time)::timestamptz AS end_at
+        FROM venue_blocks u
+        JOIN generate_series($1::date, ($1::date + 6)::date, interval '1 day') d(day)
+          ON EXTRACT(DOW FROM d.day)::int = u.weekday
+        WHERE u.kind='weekly'`, [s]),
+      // 一次性区间裁剪到本周范围
+      query(`
+        SELECT venue_id, id, reason,
+          GREATEST(start_at, $1::date::timestamptz) AS start_at,
+          LEAST(end_at, ($1::date + 7)::timestamptz) AS end_at
+        FROM venue_blocks
+        WHERE kind='once'
+          AND start_at < ($1::date + 7)::timestamptz AND end_at > $1::date::timestamptz`, [s]),
+    ]);
+
+    res.json({
+      start: s,
+      days,
+      venues: venues.rows.map((v) => ({
+        ...v,
+        classes: classes.rows.filter((c) => c.venue_id === v.id),
+        blocks: [
+          ...weekly.rows.filter((b) => b.venue_id === v.id).map((b) => ({ ...b, kind: 'weekly' })),
+          ...once.rows.filter((b) => b.venue_id === v.id).map((b) => ({ ...b, kind: 'once' })),
+        ],
+      })),
+    });
+  } catch (e) { next(e); }
+});
+
 // 器械列表（?venue_id= &status=）
 router.get('/equipment/all', async (req, res, next) => {
   try {

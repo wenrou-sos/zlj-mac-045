@@ -12,8 +12,10 @@ import cardsRouter from './routes/cards.js';
 import coachesRouter from './routes/coaches.js';
 import schedulesRouter from './routes/schedules.js';
 import venuesRouter from './routes/venues.js';
+import venueBlocksRouter from './routes/venueBlocks.js';
 import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
+import waitlistsRouter from './routes/waitlists.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
 
@@ -29,9 +31,11 @@ app.use('/api/members', membersRouter);
 app.use('/api/cards', cardsRouter);
 app.use('/api/coaches', coachesRouter);
 app.use('/api/schedules', schedulesRouter);
+app.use('/api/venues/blocks', venueBlocksRouter);
 app.use('/api/venues', venuesRouter);
 app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
+app.use('/api/waitlists', waitlistsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
 

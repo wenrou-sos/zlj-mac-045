@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { refreshCardStatuses } from '../reminderLogic.js';
+import { venueAvailabilityBlock } from '../venueAvailability.js';
+import { pickUsableCard, genUniqueVerifyCode, promoteWaitlist } from '../waitlistLogic.js';
 
 const router = Router();
-const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
 
 // 预约列表（支持课程 / 会员 / 状态过滤）
 router.get('/', async (req, res, next) => {
@@ -41,10 +42,17 @@ router.post('/', async (req, res, next) => {
     await refreshCardStatuses();
 
     const result = await withTransaction(async (tx) => {
+      const tq = (text, params) => tx.query(text, params);
       const cls = (await tx.query(`SELECT * FROM classes WHERE id=$1 FOR UPDATE`, [class_id])).rows[0];
       if (!cls) throw Object.assign(new Error('课程不存在'), { status: 404 });
       if (cls.status !== 'open') throw Object.assign(new Error('该课程未开放预约'), { status: 409 });
       if (new Date(cls.start_at) < new Date()) throw Object.assign(new Error('课程已开始，无法预约'), { status: 409 });
+
+      // 按生效后的场地可用性拦截（整停 / 一次性闭馆 / 每周固定闭馆）
+      if (cls.venue_id) {
+        const block = await venueAvailabilityBlock(cls.venue_id, cls.start_at, cls.end_at, tq);
+        if (block) throw Object.assign(new Error(`该时段场地不可用：${block.reason}`), { status: 409 });
+      }
 
       const dup = await tx.query(
         `SELECT 1 FROM bookings WHERE class_id=$1 AND member_id=$2 AND status IN ('booked','checked')`,
@@ -56,18 +64,10 @@ router.post('/', async (req, res, next) => {
         `SELECT count(*)::int n FROM bookings WHERE class_id=$1 AND status IN ('booked','checked')`,
         [class_id]
       )).rows[0].n;
-      if (booked >= cls.capacity) throw Object.assign(new Error('该课程已满员'), { status: 409 });
+      if (booked >= cls.capacity) throw Object.assign(new Error('该课程已满员，可加入候补排队'), { status: 409 });
 
-      // 选一张可用卡（优先到期早的期限卡，其次次数最多的次卡）
-      const card = (await tx.query(`
-        SELECT * FROM membership_cards
-        WHERE member_id=$1 AND status='active'
-          AND (end_date IS NULL OR end_date >= CURRENT_DATE)
-          AND (remaining IS NULL OR remaining >= $2)
-        ORDER BY
-          CASE WHEN card_type='period' THEN 0 ELSE 1 END,
-          end_date ASC NULLS LAST
-        LIMIT 1`, [member_id, cls.cost_sessions])).rows[0];
+      // 选一张可用卡（优先到期早的期限卡，其次到期早的次卡）
+      const card = await pickUsableCard(tq, member_id, cls.cost_sessions);
       if (!card) throw Object.assign(new Error('没有可用的会员卡（已过期或次数不足）'), { status: 409 });
 
       // 次卡预扣次数
@@ -76,12 +76,7 @@ router.post('/', async (req, res, next) => {
           [card.id, cls.cost_sessions]);
       }
 
-      let code;
-      for (let i = 0; i < 10; i++) {
-        code = genCode();
-        const exists = await tx.query(`SELECT 1 FROM bookings WHERE verify_code=$1`, [code]);
-        if (exists.rows.length === 0) break;
-      }
+      const code = await genUniqueVerifyCode(tq);
       const ins = await tx.query(
         `INSERT INTO bookings(class_id, member_id, card_id, verify_code)
          VALUES($1,$2,$3,$4) RETURNING *`,
@@ -96,10 +91,12 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// 取消预约：开课前 2 小时外免费取消并退次；2 小时内提示扣次规则（仍允许取消但不退次）
+// 取消预约：开课前 2 小时外免费取消并退次；2 小时内允许取消但不退次。
+// 释放出的名额在同一事务内按候补队列递补（递补前重新校验场地可用性）。
 router.post('/:id/cancel', async (req, res, next) => {
   try {
     const result = await withTransaction(async (tx) => {
+      const tq = (text, params) => tx.query(text, params);
       const b = (await tx.query(`
         SELECT b.*, cl.start_at, cl.cost_sessions FROM bookings b JOIN classes cl ON cl.id=b.class_id
         WHERE b.id=$1 FOR UPDATE`, [req.params.id])).rows[0];
@@ -120,7 +117,10 @@ router.post('/:id/cancel', async (req, res, next) => {
         `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
         [b.id, req.body.reason || (refund ? `会员取消（退还 ${b.cost_sessions} 次）` : `临期取消（不足2小时，不退 ${b.cost_sessions} 次）`)]
       );
-      return { refund, refund_sessions: refund ? b.cost_sessions : 0 };
+
+      // 名额空出，尝试候补递补（场地已不可用时不会递补并说明原因）
+      const promotion = await promoteWaitlist(tq, b.class_id);
+      return { refund, refund_sessions: refund ? b.cost_sessions : 0, promotion };
     });
     res.json({ ok: true, ...result });
   } catch (e) {

@@ -32,8 +32,8 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
   // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
-    equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
+  await query(`TRUNCATE reminders, renewals, waitlists, bookings, classes, coach_schedules,
+    equipment, venue_blocks, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
   const coaches = [
@@ -134,6 +134,35 @@ export async function seedData() {
     );
   }
 
+  // 6.5 场地不可用时段（每周固定闭馆 + 一次性闭馆区间）
+  // [venue_id, kind, weekday, start_time, end_time, start_at, end_at, reason]
+  const venueBlocks = [
+    [5, 'weekly', 3, '12:00', '14:00', null, null, '泳池换水维护'],
+    [5, 'once', null, null, null, classTs(3, 0), classTs(5, 0), '泳池设备检修'],
+    [2, 'weekly', 1, '21:00', '22:00', null, null, '深度清洁消毒'],
+  ];
+  for (const [vid, kind, weekday, st, et, startAt, endAt, reason] of venueBlocks) {
+    await query(
+      `INSERT INTO venue_blocks(venue_id, kind, weekday, start_time, end_time, start_at, end_at, reason)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [vid, kind, weekday, st, et, startAt, endAt, reason]
+    );
+  }
+  // 生成课程时避开被不可用时段覆盖的槽位，保证样例数据自洽
+  function slotBlocked(venueId, dayOffset, hh) {
+    for (const [vid, kind, weekday, st, et, startAt, endAt] of venueBlocks) {
+      if (vid !== venueId) continue;
+      if (kind === 'once') {
+        if (new Date(classTs(dayOffset, hh)) < new Date(endAt) && new Date(classTs(dayOffset, hh + 1)) > new Date(startAt)) return true;
+      } else if (weekdayOf(dayOffset) === weekday) {
+        const bh = Number(st.slice(0, 2)) + Number(st.slice(3)) / 60;
+        const eh = Number(et.slice(0, 2)) + Number(et.slice(3)) / 60;
+        if (bh < hh + 1 && eh > hh) return true;
+      }
+    }
+    return false;
+  }
+
   // 7. 教练排班：最近 7 天 ~ 未来 14 天
   const shifts = [
     ['09:00', '17:00', 'normal'],
@@ -167,6 +196,7 @@ export async function seedData() {
     const chosenHours = [...hours].sort(() => Math.random() - 0.5).slice(0, count).sort((a, b) => a - b);
     for (const h of chosenHours) {
       const [title, coachId, venueId, cap, cost] = pick(classTemplates);
+      if (slotBlocked(venueId, d, h)) continue; // 不可用时段内不排课
       const r = await query(
         `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
@@ -247,6 +277,24 @@ export async function seedData() {
   await query(`UPDATE membership_cards SET remaining=2, status='active' WHERE card_no='VIP2026003'`);
   await query(`UPDATE membership_cards SET remaining=1, status='active' WHERE card_no='VIP2026016'`);
 
+  // 9.6 候补样例：挑一节未来的课压到满员，再排两条候补
+  const fc = (await query(`
+    SELECT cl.id,
+      (SELECT count(*)::int FROM bookings b WHERE b.class_id=cl.id AND b.status IN ('booked','checked')) AS booked
+    FROM classes cl
+    WHERE cl.status='open' AND cl.start_at > now() + interval '2 days'
+    ORDER BY cl.id LIMIT 1`)).rows[0];
+  if (fc && fc.booked > 0) {
+    await query(`UPDATE classes SET capacity=$2 WHERE id=$1`, [fc.id, fc.booked]); // 刚好满员
+    const cands = await query(
+      `SELECT id FROM members WHERE id NOT IN (
+         SELECT member_id FROM bookings WHERE class_id=$1 AND status IN ('booked','checked'))
+       ORDER BY id LIMIT 2`, [fc.id]);
+    for (const m of cands.rows) {
+      await query(`INSERT INTO waitlists(class_id, member_id) VALUES($1,$2) ON CONFLICT DO NOTHING`, [fc.id, m.id]);
+    }
+  }
+
   // 10. 生成提醒
   await query(
     `INSERT INTO reminders(member_id, card_id, type, message)
@@ -272,7 +320,7 @@ export async function seedData() {
   );
 
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','venue_blocks','coach_schedules','classes','bookings','waitlists','reminders']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

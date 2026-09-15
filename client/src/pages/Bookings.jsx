@@ -28,9 +28,16 @@ export default function Bookings() {
   }
 
   async function create() {
+    const c = classes.find((x) => x.id === Number(form.class_id));
+    const full = c && c.booked_count >= c.capacity;
     try {
-      const r = await api.post('/bookings', { member_id: Number(form.member_id), class_id: Number(form.class_id) });
-      notify(`约课成功，核销码 ${r.verify_code}（已预扣课次）`, 'success');
+      if (full) {
+        await api.post('/waitlists', { member_id: Number(form.member_id), class_id: Number(form.class_id) });
+        notify('课程已满员，已加入候补队列（有空位时自动递补）', 'success');
+      } else {
+        const r = await api.post('/bookings', { member_id: Number(form.member_id), class_id: Number(form.class_id) });
+        notify(`约课成功，核销码 ${r.verify_code}（已预扣课次）`, 'success');
+      }
       setShowCreate(false);
       load();
     } catch (e) { notify(e.message, 'error'); }
@@ -43,7 +50,10 @@ export default function Bookings() {
     if (!confirm(`确定取消 ${b.member_name} 的「${b.title}」预约吗？\n${refundTip}`)) return;
     try {
       const r = await api.post(`/bookings/${b.id}/cancel`, {});
-      notify(r.refund ? `已取消并退还 ${r.refund_sessions ?? n} 次课` : '已取消（不退次）', 'success');
+      let msg = r.refund ? `已取消并退还 ${r.refund_sessions ?? n} 次课` : '已取消（不退次）';
+      if (r.promotion?.promoted) msg += `；候补会员 ${r.promotion.promoted.member_name} 已递补`;
+      else if (r.promotion?.note) msg += `；${r.promotion.note}`;
+      notify(msg, 'success');
       load();
     } catch (e) { notify(e.message, 'error'); }
   }
@@ -101,8 +111,8 @@ export default function Bookings() {
             <label className="field">课程
               <select value={form.class_id} onChange={(e) => setForm({ ...form, class_id: e.target.value })}>
                 <option value="">请选择课程</option>
-                {classes.map((c) => <option key={c.id} value={c.id} disabled={c.booked_count >= c.capacity}>
-                  {fmtDateTime(c.start_at)} {c.title}（{c.booked_count}/{c.capacity}）
+                {classes.map((c) => <option key={c.id} value={c.id}>
+                  {fmtDateTime(c.start_at)} {c.title}（{c.booked_count}/{c.capacity}）{c.booked_count >= c.capacity ? ' · 已满，可候补' : ''}
                 </option>)}
               </select>
             </label>
@@ -111,11 +121,15 @@ export default function Bookings() {
             <div className="muted" style={{ marginTop: 10, fontSize: 12.5 }}>
               {selectedClass.coach_name} · {selectedClass.venue_name} · 已约 {selectedClass.booked_count}/{selectedClass.capacity} ·
               消耗 {selectedClass.cost_sessions} 课次
+              {selectedClass.booked_count >= selectedClass.capacity &&
+                <div style={{ color: 'var(--warn)', marginTop: 4 }}>该课程已满员，提交后将加入候补队列，空出名额时按顺序自动递补。</div>}
             </div>
           )}
           <div className="form-actions">
             <button className="btn" onClick={() => setShowCreate(false)}>取消</button>
-            <button className="btn primary" disabled={!form.member_id || !form.class_id} onClick={create}>确认约课</button>
+            <button className="btn primary" disabled={!form.member_id || !form.class_id} onClick={create}>
+              {selectedClass && selectedClass.booked_count >= selectedClass.capacity ? '加入候补' : '确认约课'}
+            </button>
           </div>
         </Modal>
       )}

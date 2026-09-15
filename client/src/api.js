@@ -85,3 +85,10 @@ export const EQUIP_STATUS = {
   maintenance: { text: '维修中', cls: 'warn' },
   scrapped: { text: '已报废', cls: 'muted' },
 };
+export const WEEKDAYS_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+export const WAITLIST_STATUS = {
+  waiting: { text: '排队中', cls: 'info' },
+  promoted: { text: '已递补', cls: 'ok' },
+  canceled: { text: '已取消', cls: 'muted' },
+  failed: { text: '未补上', cls: 'warn' },
+};

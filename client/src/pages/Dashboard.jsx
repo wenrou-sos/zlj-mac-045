@@ -33,6 +33,7 @@ export default function Dashboard() {
     { label: '次卡余额不足', value: stats.lowSessions, icon: '🔔', cls: 'danger' },
     { label: '在岗教练', value: stats.coaches, icon: '🏋️' },
     { label: '开放场地 / 维修器械', value: `${stats.venuesOpen} / ${stats.maintenance}`, icon: '🏟️' },
+    { label: '候补转正待确认', value: stats.waitConfirm || 0, icon: '🕒', cls: (stats.waitConfirm || 0) > 0 ? 'warn' : '' },
   ];
 
   return (

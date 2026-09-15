@@ -63,6 +63,13 @@ router.post('/verify', async (req, res, next) => {
       if (diffH > 2) throw Object.assign(new Error('未到核销时间（开课前 2 小时内可核销）'), { status: 409 });
 
       await tx.query(`UPDATE bookings SET status='checked', checked_at=now() WHERE id=$1`, [b.id]);
+      // 候补转正者核销即视为已确认，候补记录闭环（防止逾期扫描重复处理）
+      await tx.query(
+        `UPDATE waitlists SET status='confirmed', confirmed_at=now(),
+         result_note='到店核销，自动确认候补转正'
+         WHERE booking_id=$1 AND status='promoted'`,
+        [b.id]
+      );
       return {
         booking_id: b.id,
         member_name: b.member_name,
@@ -88,6 +95,13 @@ router.post('/:id/check', async (req, res, next) => {
       if (b.status === 'checked') throw Object.assign(new Error('已核销'), { status: 409 });
       if (b.status === 'canceled') throw Object.assign(new Error('已取消'), { status: 409 });
       await tx.query(`UPDATE bookings SET status='checked', checked_at=now() WHERE id=$1`, [b.id]);
+      // 候补转正者核销即视为已确认，候补记录闭环（防止逾期扫描重复处理）
+      await tx.query(
+        `UPDATE waitlists SET status='confirmed', confirmed_at=now(),
+         result_note='到店核销，自动确认候补转正'
+         WHERE booking_id=$1 AND status='promoted'`,
+        [b.id]
+      );
     });
     await regenerateReminders();
     res.json({ ok: true });

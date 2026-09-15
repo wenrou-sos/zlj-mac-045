@@ -9,6 +9,7 @@ import MemberDetail from './pages/MemberDetail.jsx';
 import Cards from './pages/Cards.jsx';
 import Classes from './pages/Classes.jsx';
 import Bookings from './pages/Bookings.jsx';
+import Waitlists from './pages/Waitlists.jsx';
 import Coaches from './pages/Coaches.jsx';
 import Schedules from './pages/Schedules.jsx';
 import Venues from './pages/Venues.jsx';
@@ -40,6 +41,7 @@ const nav = [
   { group: '课程与教练' },
   { to: '/classes', label: '课表排课', icon: '📅' },
   { to: '/bookings', label: '预约管理', icon: '📝' },
+  { to: '/waitlists', label: '候补队列', icon: '🕒', waitBadge: true },
   { to: '/coaches', label: '教练管理', icon: '🏋️' },
   { to: '/schedules', label: '教练排班', icon: '⏰' },
   { group: '场地器械' },
@@ -48,8 +50,12 @@ const nav = [
 
 export default function App() {
   const [pending, setPending] = useState(0);
+  const [waitConfirm, setWaitConfirm] = useState(0);
   useEffect(() => {
-    const load = () => api.get('/reminders').then((r) => setPending(r.length)).catch(() => {});
+    const load = () => {
+      api.get('/reminders').then((r) => setPending(r.length)).catch(() => {});
+      api.get('/waitlists?status=promoted').then((r) => setWaitConfirm(r.length)).catch(() => {});
+    };
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
@@ -67,6 +73,7 @@ export default function App() {
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}>
               <span>{item.icon}</span>{item.label}
               {item.badge && pending > 0 && <span className="nav-badge">{pending}</span>}
+              {item.waitBadge && waitConfirm > 0 && <span className="nav-badge" title="有候补转正待确认">{waitConfirm}</span>}
             </NavLink>
           )
         )}
@@ -82,6 +89,7 @@ export default function App() {
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/classes" element={<Classes />} />
           <Route path="/bookings" element={<Bookings />} />
+          <Route path="/waitlists" element={<Waitlists />} />
           <Route path="/coaches" element={<Coaches />} />
           <Route path="/schedules" element={<Schedules />} />
           <Route path="/venues" element={<Venues />} />

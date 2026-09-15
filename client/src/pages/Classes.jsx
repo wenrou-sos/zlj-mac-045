@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours, localDateOf } from '../api.js';
+import { api, fmtTime, fmtDateTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours, localDateOf, WAITLIST_STATUS, countdownText } from '../api.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -14,6 +14,7 @@ export default function Classes() {
   const [showCreate, setShowCreate] = useState(false);
   const [detail, setDetail] = useState(null);
   const [detailBookings, setDetailBookings] = useState([]);
+  const [detailWaits, setDetailWaits] = useState([]);
   const [form, setForm] = useState({
     title: TITLES[0], coach_id: '', venue_id: '', date: todayStr(),
     hour: 19, duration: 1, capacity: 10, cost_sessions: 1,
@@ -48,10 +49,15 @@ export default function Classes() {
   }
 
   async function cancelClass(c) {
-    if (!confirm(`确定取消「${c.title}」(${new Date(c.start_at).toLocaleString('zh-CN')})？\n已预约的 ${c.booked_count} 人将全部取消并退还次卡次数。`)) return;
+    const waitN = c.waiting_count || 0;
+    const promoteN = c.promoted_count || 0;
+    const waitTip = (waitN + promoteN) > 0
+      ? `\n另有候补 ${waitN} 人排队、${promoteN} 人待确认，候补队列将一并关闭（待确认者退次）。`
+      : '';
+    if (!confirm(`确定取消「${c.title}」(${new Date(c.start_at).toLocaleString('zh-CN')})？\n已预约的 ${c.booked_count} 人将全部取消并退还次卡次数。${waitTip}`)) return;
     try {
       const r = await api.post(`/classes/${c.id}/cancel`, {});
-      notify(`课程已取消，处理 ${r.affected} 条预约`, 'success');
+      notify(`课程已取消，处理 ${r.affected} 条预约、${r.waitlists || 0} 条候补`, 'success');
       load();
       setDetail(null);
     } catch (e) { notify(e.message, 'error'); }
@@ -59,7 +65,12 @@ export default function Classes() {
 
   async function openDetail(c) {
     setDetail(c);
-    setDetailBookings(await api.get(`/bookings?class_id=${c.id}`));
+    const [bs, ws] = await Promise.all([
+      api.get(`/bookings?class_id=${c.id}`),
+      api.get(`/waitlists?class_id=${c.id}`),
+    ]);
+    setDetailBookings(bs);
+    setDetailWaits(ws);
   }
 
   const selectedDate = addDaysStr(todayStr(), dayOffset);
@@ -101,7 +112,11 @@ export default function Classes() {
               </div>
               <div className={`cap-bar ${full ? 'full' : ''}`}><div style={{ width: `${pct}%` }}></div></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span className="muted" style={{ fontSize: 12 }}>预约 {c.booked_count}/{c.capacity} · 已核销 {c.checked_count}</span>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  预约 {c.booked_count}/{c.capacity} · 已核销 {c.checked_count}
+                  {(c.waiting_count + c.promoted_count) > 0 &&
+                    <span style={{ color: 'var(--warn)' }}> · 候补 {c.waiting_count + c.promoted_count}</span>}
+                </span>
                 <span style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm" onClick={() => openDetail(c)}>预约名单</button>
                   {c.status === 'open' && new Date(c.start_at) > new Date() &&
@@ -186,6 +201,34 @@ export default function Classes() {
                   </tr>
                 ))}
                 {detailBookings.length === 0 && <tr><td colSpan={5} className="empty">暂无预约</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 style={{ margin: '16px 0 10px' }}>🕒 候补队列（{detailWaits.filter((w) => ['waiting', 'promoted'].includes(w.status)).length} 人进行中）</h3>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>顺序</th><th>会员</th><th>状态</th><th>加入/转正时间</th><th>确认截止</th><th>说明</th></tr></thead>
+              <tbody>
+                {detailWaits.map((w) => (
+                  <tr key={w.id}>
+                    <td>{w.status === 'waiting' ? `第 ${w.queue_position} 位` : <span className="muted">—</span>}</td>
+                    <td>{w.member_name}</td>
+                    <td><span className={`badge ${WAITLIST_STATUS[w.status]?.cls || 'muted'}`}>
+                      {WAITLIST_STATUS[w.status]?.text || w.status}
+                    </span></td>
+                    <td className="muted" style={{ fontSize: 12 }}>{fmtDateTime(w.promoted_at || w.joined_at)}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {w.confirm_deadline
+                        ? <span style={{ color: new Date(w.confirm_deadline) > new Date() ? 'var(--warn)' : 'var(--danger)' }}>
+                            {fmtDateTime(w.confirm_deadline)}（{countdownText(w.confirm_deadline)}）
+                          </span>
+                        : '—'}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12, maxWidth: 220 }}>{w.result_note || w.skip_reason || '—'}</td>
+                  </tr>
+                ))}
+                {detailWaits.length === 0 && <tr><td colSpan={6} className="empty">暂无候补</td></tr>}
               </tbody>
             </table>
           </div>

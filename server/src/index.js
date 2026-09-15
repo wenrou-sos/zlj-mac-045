@@ -14,8 +14,10 @@ import schedulesRouter from './routes/schedules.js';
 import venuesRouter from './routes/venues.js';
 import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
+import waitlistsRouter from './routes/waitlists.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
+import { expireWaitlists } from './waitlistLogic.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -32,6 +34,7 @@ app.use('/api/schedules', schedulesRouter);
 app.use('/api/venues', venuesRouter);
 app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
+app.use('/api/waitlists', waitlistsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
 
@@ -65,6 +68,12 @@ async function init() {
   app.listen(port, () => {
     console.log(`健身场馆管理系统 API: http://localhost:${port}/api/health  (数据库: ${DB_MODE})`);
   });
+
+  // 每 60 秒扫描一次：候补转正逾期未确认自动放弃并继续递补、开课后关闭排队
+  const waitlistTimer = setInterval(() => {
+    expireWaitlists().catch((e) => console.error('候补扫描失败：', e.message));
+  }, 60000);
+  waitlistTimer.unref?.();
 }
 
 process.on('SIGINT', async () => { await closeDb(); process.exit(0); });

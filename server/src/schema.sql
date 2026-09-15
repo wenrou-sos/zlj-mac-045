@@ -98,6 +98,42 @@ CREATE TABLE IF NOT EXISTS bookings (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_booking_active
   ON bookings(class_id, member_id) WHERE status IN ('booked','checked');
 
+-- 候补队列（满员后会员按加入顺序排队，有名额时自动递补）
+CREATE TABLE IF NOT EXISTS waitlists (
+  id              SERIAL PRIMARY KEY,
+  class_id        INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  member_id       INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  -- waiting 排队中 / promoted 已递补待确认 / confirmed 已确认 / expired 逾期未确认 / abandoned 主动放弃 / closed 课程取消
+  status          VARCHAR(10) DEFAULT 'waiting',
+  joined_at       TIMESTAMPTZ DEFAULT now(),
+  promoted_at     TIMESTAMPTZ,
+  confirm_deadline TIMESTAMPTZ,             -- 递补后必须在此时间前确认
+  confirmed_at    TIMESTAMPTZ,
+  closed_at       TIMESTAMPTZ,
+  booking_id      INTEGER REFERENCES bookings(id) ON DELETE SET NULL, -- 递补生成的预约
+  card_id         INTEGER REFERENCES membership_cards(id) ON DELETE SET NULL,
+  last_attempt_at TIMESTAMPTZ,              -- 最近一次尝试递补时间
+  skip_reason     VARCHAR(255),             -- 本次未能递补的原因（卡失效/次数不足…）
+  result_note     VARCHAR(255),             -- 最终结果说明（递补/放弃/关闭原因）
+  abandon_reason  VARCHAR(255)
+);
+
+-- 同一节课、同一会员只允许存在一条「进行中」候补（排队中或已递补待确认）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_waitlist_active
+  ON waitlists(class_id, member_id) WHERE status IN ('waiting','promoted');
+CREATE INDEX IF NOT EXISTS idx_waitlists_class ON waitlists(class_id);
+CREATE INDEX IF NOT EXISTS idx_waitlists_member ON waitlists(member_id);
+CREATE INDEX IF NOT EXISTS idx_waitlists_status ON waitlists(status);
+
+-- 老库平滑升级：预约来源（direct 直接约课 / waitlist 候补转正）
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='bookings' AND column_name='source') THEN
+    ALTER TABLE bookings ADD COLUMN source VARCHAR(10) DEFAULT 'direct';
+  END IF;
+END $$;
+
 -- 续费记录
 CREATE TABLE IF NOT EXISTS renewals (
   id            SERIAL PRIMARY KEY,

@@ -32,7 +32,7 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
   // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
+  await query(`TRUNCATE reminders, renewals, waitlists, bookings, classes, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
@@ -271,8 +271,96 @@ export async function seedData() {
        )`
   );
 
+  // 9.6 候补队列演示：满员课 + 排队中 / 已递补待确认 / 已确认 / 已放弃 各状态
+  const wlUsedCodes = new Set();
+  const wlCode = () => { let c; do { c = String(randInt(100000, 999999)); } while (wlUsedCodes.has(c) || usedCodes.has(c)); wlUsedCodes.add(c); return c; };
+  // 直接约满一节课
+  async function bookFull(classId, memberId, cardId, cost) {
+    await query(`UPDATE membership_cards SET remaining = GREATEST(remaining - $2, 0)
+      WHERE id=$1 AND remaining IS NOT NULL`, [cardId, cost]);
+    await query(
+      `INSERT INTO bookings(class_id, member_id, card_id, verify_code, status)
+       VALUES($1,$2,$3,$4,'booked')`,
+      [classId, memberId, cardId, wlCode()]
+    );
+  }
+
+  // A 课：明天 19:00 · 容量 2 · 消耗 1 次 —— 1 人已递补待确认（队首空缺席位的实时演示），后面 2 人排队
+  const classA = await query(
+    `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
+     VALUES('动感单车', 3, 1, $1, $2, 2, 1, 'open') RETURNING id`,
+    [classTs(1, 19), classTs(1, 20)]
+  );
+  const cidA = classA.rows[0].id;
+  await bookFull(cidA, 5, 5, 1);   // 50次卡
+  await bookFull(cidA, 8, 8, 1);   // 年卡
+  // 模拟会员 8 取消 -> 会员 13 递补待确认；然后会员 18、2 排队
+  await query(
+    `UPDATE bookings SET status='canceled', canceled_at=now() - INTERVAL '40 minutes',
+     cancel_reason='会员取消（退还 1 次）'
+     WHERE class_id=$1 AND member_id=8`, [cidA]);
+  await query(`UPDATE membership_cards SET remaining = remaining + 1 WHERE id=8 AND remaining IS NOT NULL`);
+  const codeA13 = wlCode();
+  const bkA13 = await query(
+    `INSERT INTO bookings(class_id, member_id, card_id, verify_code, source)
+     VALUES($1,13,13,$2,'waitlist') RETURNING id`,
+    [cidA, codeA13]);
+  await query(`UPDATE membership_cards SET remaining = remaining - 1 WHERE id=13`);
+  await query(
+    `INSERT INTO waitlists(class_id, member_id, card_id, status, joined_at, promoted_at,
+       confirm_deadline, booking_id, result_note)
+     VALUES($1,13,13,'promoted', now() - INTERVAL '40 minutes', now() - INTERVAL '40 minutes',
+       now() + INTERVAL '80 minutes', $2, '候补转正成功，请在截止时间前确认')`,
+    [cidA, bkA13.rows[0].id]);
+  await query(
+    `INSERT INTO waitlists(class_id, member_id, status, joined_at)
+     VALUES($1,18,'waiting', now() - INTERVAL '30 minutes'),
+           ($1,2,'waiting', now() - INTERVAL '20 minutes')`, [cidA]);
+
+  // B 课：后天 12:00 · 容量 3 · 消耗 2 次 —— 2 人预约 + 1 人排队，取消时队首次数不足会被跳过
+  const classB = await query(
+    `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
+     VALUES('核心普拉提', 2, 2, $1, $2, 3, 2, 'open') RETURNING id`,
+    [classTs(2, 12), classTs(2, 13)]
+  );
+  const cidB = classB.rows[0].id;
+  await bookFull(cidB, 1, 1, 2);   // 年卡
+  await bookFull(cidB, 12, 12, 2); // 季卡
+  await bookFull(cidB, 5, 5, 2);   // 50次卡
+  // 会员 16 的 20 次卡仅剩 1 次（不够 2 次），放队首用于演示跳过
+  await query(
+    `INSERT INTO waitlists(class_id, member_id, status, joined_at)
+     VALUES($1,16,'waiting', now() - INTERVAL '1 day'),
+           ($1,15,'waiting', now() - INTERVAL '20 hours'),
+           ($1,6,'waiting', now() - INTERVAL '10 hours')`, [cidB]);
+
+  // C 课：大后天 10:00 · 容量 2 —— 已确认 + 已放弃 历史留痕
+  const classC = await query(
+    `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
+     VALUES('阴瑜伽', 2, 2, $1, $2, 2, 1, 'open') RETURNING id`,
+    [classTs(3, 10), classTs(3, 11)]
+  );
+  const cidC = classC.rows[0].id;
+  await bookFull(cidC, 8, 8, 1);
+  const codeC12 = wlCode();
+  const bkC12 = await query(
+    `INSERT INTO bookings(class_id, member_id, card_id, verify_code, source)
+     VALUES($1,12,12,$2,'waitlist') RETURNING id`,
+    [cidC, codeC12]);
+  await query(
+    `INSERT INTO waitlists(class_id, member_id, card_id, status, joined_at, promoted_at,
+       confirm_deadline, confirmed_at, booking_id, result_note)
+     VALUES($1,12,12,'confirmed', now() - INTERVAL '2 days', now() - INTERVAL '2 days',
+       now() - INTERVAL '2 days' + INTERVAL '2 hours', now() - INTERVAL '2 days' + INTERVAL '10 minutes',
+       $2, '已确认候补转正预约')`,
+    [cidC, bkC12.rows[0].id]);
+  await query(
+    `INSERT INTO waitlists(class_id, member_id, status, joined_at, closed_at, abandon_reason, result_note)
+     VALUES($1,9,'abandoned', now() - INTERVAL '2 days', now() - INTERVAL '2 days' + INTERVAL '5 minutes',
+       '时间冲突', '主动退出候补队列')`, [cidC]);
+
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','waitlists','reminders']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

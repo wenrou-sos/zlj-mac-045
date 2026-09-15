@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query } from '../db.js';
+import { query, withTransaction } from '../db.js';
 
 const router = Router();
 
@@ -12,7 +12,9 @@ router.get('/', async (req, res, next) => {
       SELECT cl.*, co.name AS coach_name, v.name AS venue_name,
         (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id
           AND b.status IN ('booked','checked')) AS booked_count,
-        (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id AND b.status='checked') AS checked_count
+        (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id AND b.status='checked') AS checked_count,
+        (SELECT count(*) FROM waitlists w WHERE w.class_id=cl.id AND w.status='waiting') AS waiting_count,
+        (SELECT count(*) FROM waitlists w WHERE w.class_id=cl.id AND w.status='promoted') AS promoted_count
       FROM classes cl
       LEFT JOIN coaches co ON co.id=cl.coach_id
       LEFT JOIN venues v ON v.id=cl.venue_id
@@ -60,37 +62,57 @@ router.post('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// 取消课程（已有的未来预约一并取消）
+// 取消课程（已有的未来预约一并取消退次；候补队列整体关闭，已转正未确认的同样退次）
 router.post('/:id/cancel', async (req, res, next) => {
   try {
-    const cls = await query(`SELECT * FROM classes WHERE id=$1`, [req.params.id]);
-    if (cls.rows.length === 0) return res.status(404).json({ error: '课程不存在' });
-    if (new Date(cls.rows[0].start_at) < new Date()) {
-      return res.status(400).json({ error: '已开始的课程不能取消' });
-    }
-    await query(`UPDATE classes SET status='canceled' WHERE id=$1`, [req.params.id]);
-    // 取消全部未核销预约，并按该课程实际消耗课次退还（多课次课程不能只退 1）
-    const bookings = await query(
-      `SELECT b.id, b.card_id, cl.cost_sessions
-       FROM bookings b JOIN classes cl ON cl.id = b.class_id
-       WHERE b.class_id=$1 AND b.status IN ('booked','checked')`,
-      [req.params.id]
-    );
-    for (const b of bookings.rows) {
-      await query(
-        `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
-        [b.id, req.body.reason || '课程取消']
+    const reason = req.body.reason || '课程取消';
+    const result = await withTransaction(async (tx) => {
+      const cls = (await tx.query(`SELECT * FROM classes WHERE id=$1 FOR UPDATE`, [req.params.id])).rows[0];
+      if (!cls) throw Object.assign(new Error('课程不存在'), { status: 404 });
+      if (new Date(cls.start_at) < new Date()) throw Object.assign(new Error('已开始的课程不能取消'), { status: 400 });
+      await tx.query(`UPDATE classes SET status='canceled' WHERE id=$1`, [cls.id]);
+
+      // 取消全部未核销预约，并按该课程实际消耗课次退还（多课次课程不能只退 1）
+      const bookings = await tx.query(
+        `SELECT id, card_id FROM bookings
+         WHERE class_id=$1 AND status IN ('booked','checked') FOR UPDATE`,
+        [cls.id]
       );
-      if (b.card_id) {
-        await query(
-          `UPDATE membership_cards SET remaining = LEAST(COALESCE(remaining,0) + $2, total_sessions)
-           WHERE id=$1 AND remaining IS NOT NULL`,
-          [b.card_id, b.cost_sessions]
+      for (const b of bookings.rows) {
+        await tx.query(
+          `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
+          [b.id, reason]
+        );
+        if (b.card_id) {
+          await tx.query(
+            `UPDATE membership_cards SET remaining = LEAST(COALESCE(remaining,0) + $2, total_sessions)
+             WHERE id=$1 AND remaining IS NOT NULL`,
+            [b.card_id, cls.cost_sessions]
+          );
+        }
+      }
+
+      // 关闭候补队列：排队中的直接关闭（未预扣，无需退次）；
+      // 已递补待确认的预约随上面的批量取消已退次，候补记录标记关闭
+      const waits = await tx.query(
+        `SELECT id, booking_id FROM waitlists
+         WHERE class_id=$1 AND status IN ('waiting','promoted') FOR UPDATE`,
+        [cls.id]
+      );
+      for (const w of waits.rows) {
+        await tx.query(
+          `UPDATE waitlists SET status='closed', closed_at=now(),
+           result_note=$2 WHERE id=$1`,
+          [w.id, `整课取消：${reason}`]
         );
       }
-    }
-    res.json({ ok: true, affected: bookings.rows.length });
-  } catch (e) { next(e); }
+      return { affected: bookings.rows.length, waitlists: waits.rows.length };
+    });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    if (e.status) return res.status(e.status).json({ error: e.message });
+    next(e);
+  }
 });
 
 export default router;

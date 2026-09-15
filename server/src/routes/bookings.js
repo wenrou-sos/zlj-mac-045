@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { refreshCardStatuses } from '../reminderLogic.js';
+import { fillWaitlist } from '../waitlistLogic.js';
 
 const router = Router();
 const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
@@ -56,7 +57,14 @@ router.post('/', async (req, res, next) => {
         `SELECT count(*)::int n FROM bookings WHERE class_id=$1 AND status IN ('booked','checked')`,
         [class_id]
       )).rows[0].n;
-      if (booked >= cls.capacity) throw Object.assign(new Error('该课程已满员'), { status: 409 });
+      if (booked >= cls.capacity) throw Object.assign(new Error('该课程已满员，可加入候补队列'), { status: 409 });
+
+      // 满员之外，若该会员还有进行中的候补，也不允许直接重复约（避免候补与预约并存）
+      const inWait = await tx.query(
+        `SELECT 1 FROM waitlists WHERE class_id=$1 AND member_id=$2 AND status IN ('waiting','promoted')`,
+        [class_id, member_id]
+      );
+      if (inWait.rows.length > 0) throw Object.assign(new Error('您已在该课程候补队列中'), { status: 409 });
 
       // 选一张可用卡（优先到期早的期限卡，其次次数最多的次卡）
       const card = (await tx.query(`
@@ -97,6 +105,7 @@ router.post('/', async (req, res, next) => {
 });
 
 // 取消预约：开课前 2 小时外免费取消并退次；2 小时内提示扣次规则（仍允许取消但不退次）
+// 取消释放名额后，同一事务内按候补加入顺序自动递补
 router.post('/:id/cancel', async (req, res, next) => {
   try {
     const result = await withTransaction(async (tx) => {
@@ -120,7 +129,23 @@ router.post('/:id/cancel', async (req, res, next) => {
         `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
         [b.id, req.body.reason || (refund ? `会员取消（退还 ${b.cost_sessions} 次）` : `临期取消（不足2小时，不退 ${b.cost_sessions} 次）`)]
       );
-      return { refund, refund_sessions: refund ? b.cost_sessions : 0 };
+
+      // 若该会员自己同时在候补队列（理论上不会），顺手清理；再按顺序自动递补
+      await tx.query(
+        `UPDATE waitlists SET status='abandoned', closed_at=now(),
+         result_note='预约已取消，候补记录关闭'
+         WHERE class_id=$1 AND member_id=$2 AND status='waiting'`,
+        [b.class_id, b.member_id]
+      );
+      // 取消的是候补转正预约：候补记录随之结束（逾期扫描不会再重复退次）
+      await tx.query(
+        `UPDATE waitlists SET status='abandoned', closed_at=now(),
+         result_note=$2
+         WHERE booking_id=$1 AND status='promoted'`,
+        [b.id, `转正后取消预约（${refund ? '退还' : '不退'} ${b.cost_sessions} 次）`]
+      );
+      const promoted = await fillWaitlist(tx, b.class_id);
+      return { refund, refund_sessions: refund ? b.cost_sessions : 0, waitlist_promoted: promoted };
     });
     res.json({ ok: true, ...result });
   } catch (e) {

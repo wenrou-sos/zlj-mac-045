@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, fmtDate, fmtDateTime, CARD_STATUS, BOOKING_STATUS, todayStr, addDaysStr } from '../api.js';
+import { api, fmtDate, fmtDateTime, CARD_STATUS, BOOKING_STATUS, WAITLIST_STATUS, countdownText, todayStr, addDaysStr } from '../api.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -25,9 +25,13 @@ export default function MemberDetail() {
 
   // 续费表单
   const [renewForm, setRenewForm] = useState({ amount: 0, extend_days: 30, add_sessions: 10 });
+  const [waits, setWaits] = useState([]);
 
   const load = () => api.get(`/members/${id}`).then(setM);
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    load();
+    api.get(`/waitlists?member_id=${id}`).then(setWaits).catch(() => {});
+  }, [id]);
 
   if (!m) return <div className="empty">加载中…</div>;
 
@@ -134,6 +138,37 @@ export default function MemberDetail() {
                 </tr>
               ))}
               {m.recentBookings.length === 0 && <tr><td colSpan={5} className="empty">暂无预约记录</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>🕒 候补记录</h3>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>课程</th><th>上课时间</th><th>状态</th><th>排队顺序</th><th>确认截止</th><th>结果说明</th></tr></thead>
+            <tbody>
+              {waits.map((w) => (
+                <tr key={w.id}>
+                  <td>{w.title}</td>
+                  <td className="nowrap">{fmtDateTime(w.start_at)}</td>
+                  <td><span className={`badge ${WAITLIST_STATUS[w.status]?.cls || 'muted'}`}>
+                    {WAITLIST_STATUS[w.status]?.text || w.status}
+                  </span></td>
+                  <td>{w.status === 'waiting' ? `第 ${w.queue_position} 位` : '—'}</td>
+                  <td className="nowrap" style={{ fontSize: 12 }}>
+                    {w.confirm_deadline
+                      ? `${fmtDateTime(w.confirm_deadline)}${w.status === 'promoted' ? `（${countdownText(w.confirm_deadline)}）` : ''}`
+                      : '—'}
+                  </td>
+                  <td className="muted" style={{ fontSize: 12, maxWidth: 260 }}>
+                    {w.result_note || w.skip_reason || '—'}
+                    {w.abandon_reason && <div>放弃原因：{w.abandon_reason}</div>}
+                  </td>
+                </tr>
+              ))}
+              {waits.length === 0 && <tr><td colSpan={6} className="empty">暂无候补记录</td></tr>}
             </tbody>
           </table>
         </div>

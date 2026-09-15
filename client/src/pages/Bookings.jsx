@@ -36,6 +36,15 @@ export default function Bookings() {
     } catch (e) { notify(e.message, 'error'); }
   }
 
+  async function joinWaitlist() {
+    try {
+      const r = await api.post('/waitlists', { member_id: Number(form.member_id), class_id: Number(form.class_id) });
+      notify(`已加入候补队列，当前第 ${r.queue_position} 位，有名额将自动递补`, 'success');
+      setShowCreate(false);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+
   async function cancel(b) {
     const hours = (new Date(b.start_at) - Date.now()) / 3600e3;
     const n = b.cost_sessions || 1;
@@ -43,18 +52,20 @@ export default function Bookings() {
     if (!confirm(`确定取消 ${b.member_name} 的「${b.title}」预约吗？\n${refundTip}`)) return;
     try {
       const r = await api.post(`/bookings/${b.id}/cancel`, {});
-      notify(r.refund ? `已取消并退还 ${r.refund_sessions ?? n} 次课` : '已取消（不退次）', 'success');
+      const msg = r.refund ? `已取消并退还 ${r.refund_sessions ?? n} 次课` : '已取消（不退次）';
+      notify(r.waitlist_promoted > 0 ? `${msg}，已自动递补 ${r.waitlist_promoted} 位候补会员` : msg, 'success');
       load();
     } catch (e) { notify(e.message, 'error'); }
   }
 
   const tabs = [['', '全部'], ['booked', '已预约'], ['checked', '已核销'], ['canceled', '已取消'], ['no_show', '未到店']];
   const selectedClass = classes.find((c) => c.id === Number(form.class_id));
+  const isFull = selectedClass && selectedClass.booked_count >= selectedClass.capacity;
 
   return (
     <div>
       <div className="page-title">预约管理</div>
-      <div className="page-sub">约课时自动选卡、预扣课次；开课前 2 小时外取消退次，2 小时内取消不退次</div>
+      <div className="page-sub">约课时自动选卡、预扣课次；开课前 2 小时外取消退次，2 小时内取消不退次；满员可加入候补自动递补</div>
 
       <div className="toolbar">
         {tabs.map(([k, t]) => (
@@ -77,7 +88,9 @@ export default function Bookings() {
                   <td className="muted">{b.venue_name}</td>
                   <td className="nowrap">{fmtDateTime(b.start_at)}</td>
                   <td className="code-chip">{b.verify_code}</td>
-                  <td><span className={`badge ${BOOKING_STATUS[b.status]?.cls || 'muted'}`}>{BOOKING_STATUS[b.status]?.text || b.status}</span></td>
+                  <td><span className={`badge ${BOOKING_STATUS[b.status]?.cls || 'muted'}`}>{BOOKING_STATUS[b.status]?.text || b.status}</span>
+                    {b.source === 'waitlist' && b.status !== 'canceled' && <span className="badge warn" style={{ marginLeft: 4 }}>候补转正</span>}
+                  </td>
                   <td className="muted" style={{ fontSize: 12, maxWidth: 180 }}>{b.cancel_reason || '—'}</td>
                   <td>{b.status === 'booked' && new Date(b.start_at) > new Date() &&
                     <button className="btn sm danger" onClick={() => cancel(b)}>取消预约</button>}</td>
@@ -101,8 +114,9 @@ export default function Bookings() {
             <label className="field">课程
               <select value={form.class_id} onChange={(e) => setForm({ ...form, class_id: e.target.value })}>
                 <option value="">请选择课程</option>
-                {classes.map((c) => <option key={c.id} value={c.id} disabled={c.booked_count >= c.capacity}>
-                  {fmtDateTime(c.start_at)} {c.title}（{c.booked_count}/{c.capacity}）
+                {classes.map((c) => <option key={c.id} value={c.id}>
+                  {fmtDateTime(c.start_at)} {c.title}（{c.booked_count}/{c.capacity}
+                  {c.booked_count >= c.capacity && c.waiting_count > 0 ? `，候补 ${c.waiting_count} 人` : ''}）
                 </option>)}
               </select>
             </label>
@@ -110,12 +124,17 @@ export default function Bookings() {
           {selectedClass && (
             <div className="muted" style={{ marginTop: 10, fontSize: 12.5 }}>
               {selectedClass.coach_name} · {selectedClass.venue_name} · 已约 {selectedClass.booked_count}/{selectedClass.capacity} ·
-              消耗 {selectedClass.cost_sessions} 课次
+              候补 {selectedClass.waiting_count || 0} 人 · 消耗 {selectedClass.cost_sessions} 课次
+              {isFull && <div style={{ color: 'var(--warn)', marginTop: 6 }}>
+                该课程已满员，加入候补后，有人取消将按排队顺序自动递补（转正仍校验会员卡与剩余次数）
+              </div>}
             </div>
           )}
           <div className="form-actions">
             <button className="btn" onClick={() => setShowCreate(false)}>取消</button>
-            <button className="btn primary" disabled={!form.member_id || !form.class_id} onClick={create}>确认约课</button>
+            {isFull
+              ? <button className="btn primary" disabled={!form.member_id || !form.class_id} onClick={joinWaitlist}>加入候补队列</button>
+              : <button className="btn primary" disabled={!form.member_id || !form.class_id} onClick={create}>确认约课</button>}
           </div>
         </Modal>
       )}

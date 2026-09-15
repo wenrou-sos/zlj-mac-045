@@ -80,6 +80,23 @@ export const BOOKING_STATUS = {
   canceled: { text: '已取消', cls: 'muted' },
   no_show: { text: '未到店', cls: 'warn' },
 };
+export const WAITLIST_STATUS = {
+  waiting: { text: '排队中', cls: 'info' },
+  promoted: { text: '待确认', cls: 'warn' },
+  confirmed: { text: '已确认', cls: 'ok' },
+  expired: { text: '已失效', cls: 'danger' },
+  abandoned: { text: '已放弃', cls: 'muted' },
+  closed: { text: '课程已取消', cls: 'muted' },
+};
+
+// 候补确认截止倒计时：返回「剩余 X小时Y分」之类的人类可读文本
+export function countdownText(deadline) {
+  const ms = new Date(deadline) - Date.now();
+  if (ms <= 0) return '已截止';
+  const m = Math.floor(ms / 60000);
+  if (m >= 60) return `剩余 ${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+  return `剩余 ${m} 分钟`;
+}
 export const EQUIP_STATUS = {
   normal: { text: '正常', cls: 'ok' },
   maintenance: { text: '维修中', cls: 'warn' },

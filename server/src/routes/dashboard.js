@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { query } from '../db.js';
-import { refreshCardStatuses, regenerateReminders } from '../reminderLogic.js';
+import { refreshCardStatuses, regenerateReminders, regenerateEquipmentReminders } from '../reminderLogic.js';
 
 const router = Router();
 
@@ -8,10 +8,12 @@ router.get('/stats', async (req, res, next) => {
   try {
     await refreshCardStatuses();
     await regenerateReminders();
+    await regenerateEquipmentReminders();
     const one = async (sql) => (await query(sql)).rows[0];
     const [
       members, activeCards, expiringSoon, lowSessions,
-      todayClasses, todayBookings, checked, coaches, venuesOpen, maintenance,
+      todayClasses, todayBookings, checked, coaches, venuesOpen, openOrders,
+      equipAvailable, equipTotal, maintainDue,
     ] = await Promise.all([
       one(`SELECT count(*)::int n FROM members`),
       one(`SELECT count(*)::int n FROM membership_cards WHERE status='active'
@@ -32,7 +34,14 @@ router.get('/stats', async (req, res, next) => {
            AND b.status='checked'`),
       one(`SELECT count(*)::int n FROM coaches WHERE status='active'`),
       one(`SELECT count(*)::int n FROM venues WHERE status='open'`),
-      one(`SELECT count(*)::int n FROM equipment WHERE status='maintenance'`),
+      one(`SELECT count(*)::int n FROM repair_orders WHERE status IN ('pending','processing')`),
+      one(`SELECT COALESCE(sum(quantity),0)::int n FROM equipment WHERE status='normal'`),
+      one(`SELECT COALESCE(sum(quantity),0)::int n FROM equipment WHERE status<>'scrapped'`),
+      one(`SELECT count(*)::int n FROM equipment e
+           WHERE e.status='normal' AND e.maintain_interval_days IS NOT NULL
+             AND (COALESCE(e.last_maintained_at, e.purchased_at, CURRENT_DATE)
+                  + (e.maintain_interval_days || ' days')::interval)::date
+                 <= CURRENT_DATE + INTERVAL '3 days'`),
     ]);
     res.json({
       members: members.n,
@@ -44,7 +53,10 @@ router.get('/stats', async (req, res, next) => {
       checkedToday: checked.n,
       coaches: coaches.n,
       venuesOpen: venuesOpen.n,
-      maintenance: maintenance.n,
+      openOrders: openOrders.n,
+      equipAvailable: equipAvailable.n,
+      equipTotal: equipTotal.n,
+      maintainDue: maintainDue.n,
     });
   } catch (e) { next(e); }
 });

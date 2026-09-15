@@ -32,7 +32,11 @@ export default function Dashboard() {
     { label: '7天内到期', value: stats.expiringSoon, icon: '⏳', cls: 'warn' },
     { label: '次卡余额不足', value: stats.lowSessions, icon: '🔔', cls: 'danger' },
     { label: '在岗教练', value: stats.coaches, icon: '🏋️' },
-    { label: '开放场地 / 维修器械', value: `${stats.venuesOpen} / ${stats.maintenance}`, icon: '🏟️' },
+    { label: '开放场地', value: stats.venuesOpen, icon: '🏟️' },
+    { label: '可用器械（台）', value: `${stats.equipAvailable} / ${stats.equipTotal}`, icon: '🔧',
+      cls: stats.equipAvailable < stats.equipTotal ? 'warn' : '' },
+    { label: '进行中维修工单', value: stats.openOrders, icon: '🛠️', cls: stats.openOrders ? 'warn' : '' },
+    { label: '待保养器械', value: stats.maintainDue, icon: '🧰', cls: stats.maintainDue ? 'danger' : '' },
   ];
 
   return (
@@ -73,17 +77,25 @@ export default function Dashboard() {
         <div className="panel">
           <h3>🔔 待处理提醒 <Link to="/reminders" className="btn sm" style={{ marginLeft: 'auto' }}>全部</Link></h3>
           {reminders.length === 0 && <div className="empty">暂无待处理提醒</div>}
-          {reminders.map((r) => (
-            <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderBottom: '1px solid #20262f', gap: 10 }}>
-              <div>
-                <span className={`badge ${r.type === 'expired' ? 'danger' : r.type === 'low_sessions' ? 'warn' : 'info'}`}>
-                  {r.type === 'expired' ? '已过期' : r.type === 'low_sessions' ? '次数不足' : '即将到期'}
-                </span>
-                <span style={{ marginLeft: 8 }}>{r.member_name}</span>
-                <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{r.message}</div>
+          {reminders.map((r) => {
+            const isEquip = r.type === 'equipment_maintain';
+            const badgeCls = r.type === 'expired' ? 'danger'
+              : r.type === 'low_sessions' || isEquip ? 'warn' : 'info';
+            const badgeText = isEquip ? '器械保养' : r.type === 'expired' ? '已过期'
+              : r.type === 'low_sessions' ? '次数不足' : '即将到期';
+            return (
+              <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '9px 0', borderBottom: '1px solid #20262f', gap: 10 }}>
+                <div>
+                  <span className={`badge ${badgeCls}`}>{badgeText}</span>
+                  <span style={{ marginLeft: 8 }}>{isEquip ? `${r.equipment_name}（${r.venue_name || '未分配'}）` : r.member_name}</span>
+                  <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>{r.message}</div>
+                </div>
+                <Link to={isEquip ? '/venues' : '/reminders'} className="btn sm" style={{ alignSelf: 'center' }}>
+                  {isEquip ? '去保养' : '处理'}
+                </Link>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

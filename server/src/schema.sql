@@ -52,8 +52,32 @@ CREATE TABLE IF NOT EXISTS equipment (
   quantity      INTEGER DEFAULT 1,
   status        VARCHAR(12) DEFAULT 'normal',-- normal / maintenance / scrapped
   purchased_at  DATE,
-  note          VARCHAR(255)
+  note          VARCHAR(255),
+  maintain_interval_days INTEGER,            -- 保养周期（天），为空表示不提醒
+  last_maintained_at     DATE                -- 上次保养日期
 );
+
+-- 维修工单：一台器械同一时间只允许存在一张未完成（待派单/维修中）的工单
+CREATE TABLE IF NOT EXISTS repair_orders (
+  id            SERIAL PRIMARY KEY,
+  equipment_id  INTEGER NOT NULL REFERENCES equipment(id),
+  reporter      VARCHAR(50) NOT NULL,        -- 报修人
+  fault_desc    VARCHAR(255) NOT NULL,       -- 故障描述
+  assignee      VARCHAR(50),                 -- 处理人（维修师傅/责任人）
+  status        VARCHAR(12) DEFAULT 'pending', -- pending（待派单）/ processing（维修中）/ done（已完成）/ scrapped（已报废）
+  cost          NUMERIC(10,2) DEFAULT 0,     -- 维修费用
+  repair_result VARCHAR(255),                -- 维修结果/备注
+  scrap_reason  VARCHAR(255),                -- 报废原因
+  approver      VARCHAR(50),                 -- 报废审核人
+  created_at    TIMESTAMPTZ DEFAULT now(),   -- 报修时间（开工单）
+  started_at    TIMESTAMPTZ,                 -- 派单时间
+  completed_at  TIMESTAMPTZ                  -- 完成/报废时间
+);
+
+-- 同一台器械同时只能有一张未完成工单（数据库级保证）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_repair_order_open
+  ON repair_orders(equipment_id) WHERE status IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS idx_repair_orders_equipment ON repair_orders(equipment_id);
 
 -- 教练排班
 CREATE TABLE IF NOT EXISTS coach_schedules (
@@ -76,6 +100,8 @@ CREATE TABLE IF NOT EXISTS classes (
   end_at        TIMESTAMPTZ NOT NULL,
   capacity      INTEGER NOT NULL DEFAULT 10,
   cost_sessions INTEGER NOT NULL DEFAULT 1, -- 消耗课次
+  required_equipment_id INTEGER REFERENCES equipment(id) ON DELETE SET NULL, -- 该课所需器械
+  required_quantity    INTEGER DEFAULT 0,  -- 所需可用数量
   status        VARCHAR(10) DEFAULT 'open',  -- open / canceled / finished
   created_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -110,19 +136,29 @@ CREATE TABLE IF NOT EXISTS renewals (
   operator      VARCHAR(50) DEFAULT '前台'
 );
 
--- 到期 / 低余额提醒
+-- 到期 / 低余额 / 器械保养提醒（member_id / card_id 对器械类提醒为空）
 CREATE TABLE IF NOT EXISTS reminders (
   id            SERIAL PRIMARY KEY,
-  member_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  member_id     INTEGER REFERENCES members(id) ON DELETE CASCADE,
   card_id       INTEGER REFERENCES membership_cards(id) ON DELETE CASCADE,
-  type          VARCHAR(12) NOT NULL,        -- expiring / expired / low_sessions
+  equipment_id  INTEGER REFERENCES equipment(id) ON DELETE CASCADE,
+  type          VARCHAR(20) NOT NULL,        -- expiring / expired / low_sessions / equipment_maintain
   message       VARCHAR(255) NOT NULL,
   status        VARCHAR(10) DEFAULT 'pending', -- pending / notified / ignored
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+-- 老库升级：放宽 member_id 与 type 长度、补 equipment_id 列（IF NOT EXISTS 不支持 ADD COLUMN，用 DO 块）
+DO $$
+BEGIN
+  ALTER TABLE reminders ALTER COLUMN member_id DROP NOT NULL;
+  ALTER TABLE reminders ALTER COLUMN type TYPE VARCHAR(20);
+EXCEPTION WHEN undefined_table THEN NULL;
+END $$;
+ALTER TABLE reminders ADD COLUMN IF NOT EXISTS equipment_id INTEGER REFERENCES equipment(id) ON DELETE CASCADE;
 
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_reminders_equipment ON reminders(equipment_id);

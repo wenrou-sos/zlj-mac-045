@@ -10,6 +10,7 @@ export default function Classes() {
   const [list, setList] = useState([]);
   const [coaches, setCoaches] = useState([]);
   const [venues, setVenues] = useState([]);
+  const [equipment, setEquipment] = useState([]);
   const [dayOffset, setDayOffset] = useState(0); // -7..14
   const [showCreate, setShowCreate] = useState(false);
   const [detail, setDetail] = useState(null);
@@ -17,6 +18,7 @@ export default function Classes() {
   const [form, setForm] = useState({
     title: TITLES[0], coach_id: '', venue_id: '', date: todayStr(),
     hour: 19, duration: 1, capacity: 10, cost_sessions: 1,
+    required_equipment_id: '', required_quantity: 0,
   });
 
   const from = useMemo(() => addDaysStr(todayStr(), -7), []);
@@ -28,6 +30,7 @@ export default function Classes() {
     load();
     api.get('/coaches').then(setCoaches);
     api.get('/venues').then(setVenues);
+    api.get('/venues/equipment/all').then(setEquipment);
   }, []);
 
   async function create() {
@@ -40,8 +43,10 @@ export default function Classes() {
         end_at: isoAddHours(form.date, form.hour, Number(form.duration)),
         capacity: Number(form.capacity),
         cost_sessions: Number(form.cost_sessions) || 1,
+        required_equipment_id: form.required_equipment_id ? Number(form.required_equipment_id) : null,
+        required_quantity: form.required_equipment_id ? Number(form.required_quantity) || 0 : 0,
       });
-      notify('排课成功（已校验教练与场地冲突）', 'success');
+      notify('排课成功（已校验教练冲突、场地冲突与可用器械数量）', 'success');
       setShowCreate(false);
       load();
     } catch (e) { notify(e.message, 'error'); }
@@ -63,6 +68,10 @@ export default function Classes() {
   }
 
   const selectedDate = addDaysStr(todayStr(), dayOffset);
+  const venueEquipment = useMemo(
+    () => equipment.filter((eq) => form.venue_id && eq.venue_id === Number(form.venue_id)),
+    [equipment, form.venue_id]
+  );
   const dayList = list
     .filter((c) => localDateOf(c.start_at) === selectedDate)
     .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
@@ -98,6 +107,8 @@ export default function Classes() {
               <div className="meta">
                 <span>🏋️ {c.coach_name || '待定教练'}</span>
                 <span>🏟️ {c.venue_name || '待定场地'}</span>
+                {c.required_equipment_name &&
+                  <span>🔧 {c.required_equipment_name} ×{c.required_quantity}</span>}
               </div>
               <div className={`cap-bar ${full ? 'full' : ''}`}><div style={{ width: `${pct}%` }}></div></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -143,12 +154,51 @@ export default function Classes() {
             <label className="field">场地
               <select value={form.venue_id} onChange={(e) => {
                 const v = venues.find((x) => x.id === Number(e.target.value));
-                setForm({ ...form, venue_id: e.target.value, capacity: v ? Math.min(form.capacity, v.capacity) : form.capacity });
+                setForm({
+                  ...form,
+                  venue_id: e.target.value,
+                  capacity: v ? Math.min(form.capacity, v.capacity) : form.capacity,
+                  required_equipment_id: '', required_quantity: 0,
+                });
               }}>
                 <option value="">待定</option>
-                {venues.filter((v) => v.status === 'open').map((v) => <option key={v.id} value={v.id}>{v.name}（上限 {v.capacity} 人）</option>)}
+                {venues.filter((v) => v.status === 'open').map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}（上限 {v.capacity} 人，可用器械 {v.normal_count}/{v.equipment_count} 台）
+                  </option>
+                ))}
               </select>
             </label>
+            <label className="field">所需器械（不选为不校验）
+              <select value={form.required_equipment_id} onChange={(e) => {
+                const eq = venueEquipment.find((x) => x.id === Number(e.target.value));
+                setForm({ ...form, required_equipment_id: e.target.value,
+                  required_quantity: e.target.value ? Math.min(1, eq.quantity) : 0 });
+              }}>
+                <option value="">不需要器械</option>
+                {venueEquipment.map((eq) => (
+                  <option key={eq.id} value={eq.id} disabled={eq.status !== 'normal'}>
+                    {eq.name}（当前可用 {eq.status === 'normal' ? eq.quantity : 0} 台{eq.status !== 'normal' ? ` · ${eq.status === 'maintenance' ? '维修中' : '已报废'}` : ''}）
+                  </option>
+                ))}
+              </select>
+            </label>
+            {form.required_equipment_id && (() => {
+              const eq = venueEquipment.find((x) => x.id === Number(form.required_equipment_id));
+              const enough = eq && eq.status === 'normal' && eq.quantity >= Number(form.required_quantity);
+              return (
+                <label className="field">需要数量（台）
+                  <input type="number" min="1" max={eq?.quantity || 1}
+                    className={enough ? '' : 'input-warn'}
+                    value={form.required_quantity}
+                    onChange={(e) => setForm({ ...form, required_quantity: Number(e.target.value) })} />
+                  <span className={enough ? 'muted' : 'warn-text'} style={{ fontSize: 11.5 }}>
+                    {eq ? `该场地当前可用 ${eq.quantity} 台` : ''}
+                    {!enough ? ' · 数量不足，提交将被拦截' : ' · 数量充足'}
+                  </span>
+                </label>
+              );
+            })()}
             <label className="field">容量（人）
               <input type="number" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></label>
             <label className="field">消耗课次

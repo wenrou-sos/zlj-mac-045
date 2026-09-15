@@ -36,7 +36,7 @@ const nav = [
   { group: '会员与卡' },
   { to: '/members', label: '会员管理', icon: '👤' },
   { to: '/cards', label: '会员卡', icon: '💳' },
-  { to: '/reminders', label: '续费提醒', icon: '🔔', badge: true },
+  { to: '/reminders', label: '提醒中心', icon: '🔔', badge: true },
   { group: '课程与教练' },
   { to: '/classes', label: '课表排课', icon: '📅' },
   { to: '/bookings', label: '预约管理', icon: '📝' },

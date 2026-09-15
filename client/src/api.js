@@ -85,3 +85,22 @@ export const EQUIP_STATUS = {
   maintenance: { text: '维修中', cls: 'warn' },
   scrapped: { text: '已报废', cls: 'muted' },
 };
+export const ORDER_STATUS = {
+  pending: { text: '待派单', cls: 'danger' },
+  processing: { text: '维修中', cls: 'warn' },
+  done: { text: '已完成', cls: 'ok' },
+  scrapped: { text: '已报废', cls: 'muted' },
+};
+// 维修耗时（秒 -> 友好文本）
+export function fmtDuration(sec) {
+  if (sec == null) return '—';
+  const h = Math.floor(sec / 3600);
+  const d = Math.floor(h / 24);
+  if (d >= 1) {
+    const leftH = h % 24;
+    return leftH ? `${d} 天 ${leftH} 小时` : `${d} 天`;
+  }
+  if (h >= 1) return `${h} 小时`;
+  const m = Math.max(1, Math.round(sec / 60));
+  return `${m} 分钟`;
+}

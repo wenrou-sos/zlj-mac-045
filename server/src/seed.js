@@ -33,7 +33,7 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 export async function seedData() {
   // 1. 清空
   await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
-    equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
+    repair_orders, equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
   const coaches = [
@@ -115,24 +115,47 @@ export async function seedData() {
     await query('INSERT INTO venues(name, capacity, location) VALUES($1,$2,$3)', [name, cap, loc]);
   }
 
-  // 6. 器械
+  // 6. 器械（含保养周期/上次保养日期）
+  // [场地, 名称, 资产编号, 数量, 状态, 购置偏移天, 保养周期天, 上次保养偏移天]
   const equipment = [
-    [4, '跑步机', 'TM-001', 8, 'normal', -500],
-    [4, '史密斯架', 'SM-002', 2, 'normal', -400],
-    [4, '卧推凳', 'BE-003', 6, 'maintenance', -300],
-    [1, '动感单车', 'BK-010', 20, 'normal', -200],
-    [2, '瑜伽垫', 'YM-020', 30, 'normal', -100],
-    [3, '搏击沙袋', 'BG-030', 6, 'normal', -150],
-    [5, '泳道计时器', 'WT-040', 2, 'scrapped', -600],
-    [4, '龙门架', 'CM-005', 2, 'normal', -250],
+    [4, '跑步机', 'TM-001', 8, 'normal', -500, 90, -100],   // 距上次保养 100 天 → 已逾期
+    [4, '史密斯架', 'SM-002', 2, 'normal', -400, 180, -179],// 明天到保养期（3 天窗口内）
+    [4, '卧推凳', 'BE-003', 6, 'maintenance', -300, 180, -120], // 维修中：有未完工单
+    [1, '动感单车', 'BK-010', 20, 'normal', -200, 120, -10], // 充足
+    [2, '瑜伽垫', 'YM-020', 30, 'normal', -100, 90, -88],    // 2 天后到期
+    [3, '搏击沙袋', 'BG-030', 6, 'normal', -150, 365, -60],
+    [5, '泳道计时器', 'WT-040', 2, 'scrapped', -600, null, null], // 已报废（带报废工单）
+    [4, '龙门架', 'CM-005', 2, 'normal', -250, 180, -30],
   ];
-  for (const [vid, name, asset, qty, status, pOff] of equipment) {
+  for (const [vid, name, asset, qty, status, pOff, interval, lastOff] of equipment) {
     await query(
-      `INSERT INTO equipment(venue_id, name, asset_no, quantity, status, purchased_at)
-       VALUES($1,$2,$3,$4,$5,$6)`,
-      [vid, name, asset, qty, status, dateStr(pOff)]
+      `INSERT INTO equipment(venue_id, name, asset_no, quantity, status, purchased_at,
+         maintain_interval_days, last_maintained_at)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [vid, name, asset, qty, status, dateStr(pOff), interval, lastOff == null ? null : dateStr(lastOff)]
     );
   }
+
+  // 6.1 维修工单：卧推凳维修中、泳道计时器已报废（留原因+审核人）、跑步机一条已完工历史
+  await query(
+    `INSERT INTO repair_orders(equipment_id, reporter, fault_desc, assignee, status, cost,
+       repair_result, created_at, started_at)
+     VALUES(3,'前台小雅','3 号卧推凳靠背调节卡扣断裂，无法固定角度','外协-李师傅','processing',
+       0,NULL, now() - INTERVAL '2 days', now() - INTERVAL '2 days')`
+  );
+  await query(
+    `INSERT INTO repair_orders(equipment_id, reporter, fault_desc, assignee, status, cost,
+       scrap_reason, approver, created_at, started_at, completed_at)
+     VALUES(7,'值班教练大刘','计时器主板进水，屏幕不亮，维修报价高于重置成本','维修商张工','scrapped',
+       150,'主板腐蚀严重，维修报价约 1200 元高于新购 800 元，建议报废','店长 王经理',
+       now() - INTERVAL '40 days', now() - INTERVAL '40 days', now() - INTERVAL '38 days')`
+  );
+  await query(
+    `INSERT INTO repair_orders(equipment_id, reporter, fault_desc, assignee, status, cost,
+       repair_result, created_at, started_at, completed_at)
+     VALUES(1,'保洁阿姨','2 号跑步机跑带异响','设备组 赵师傅','done', 260,
+       '更换跑带并校准，运行正常', now() - INTERVAL '30 days', now() - INTERVAL '30 days', now() - INTERVAL '29 days')`
+  );
 
   // 7. 教练排班：最近 7 天 ~ 未来 14 天
   const shifts = [
@@ -272,7 +295,8 @@ export async function seedData() {
   );
 
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','repair_orders',
+    'coach_schedules','classes','bookings','reminders']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

@@ -1,14 +1,15 @@
 import { Router } from 'express';
 import { query } from '../db.js';
-import { refreshCardStatuses, regenerateReminders } from '../reminderLogic.js';
+import { refreshCardStatuses, regenerateReminders, regenerateEquipmentReminders } from '../reminderLogic.js';
 
 const router = Router();
 
-// 提醒列表
+// 提醒列表（会员卡续费提醒 + 器械保养提醒）
 router.get('/', async (req, res, next) => {
   try {
     await refreshCardStatuses();
     await regenerateReminders();
+    await regenerateEquipmentReminders();
     const { status = 'pending', type } = req.query;
     const conds = [];
     const params = [];
@@ -17,13 +18,17 @@ router.get('/', async (req, res, next) => {
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const r = await query(`
       SELECT r.*, m.name AS member_name, m.phone, c.card_no, c.plan_name,
-        c.end_date, c.remaining, c.card_type
+        c.end_date, c.remaining, c.card_type,
+        e.name AS equipment_name, e.asset_no, e.venue_id, v.name AS venue_name
       FROM reminders r
-      JOIN members m ON m.id=r.member_id
+      LEFT JOIN members m ON m.id=r.member_id
       LEFT JOIN membership_cards c ON c.id=r.card_id
+      LEFT JOIN equipment e ON e.id=r.equipment_id
+      LEFT JOIN venues v ON v.id=e.venue_id
       ${where}
       ORDER BY
-        CASE r.type WHEN 'expired' THEN 0 WHEN 'low_sessions' THEN 1 ELSE 2 END,
+        CASE r.type WHEN 'expired' THEN 0 WHEN 'equipment_maintain' THEN 1
+                    WHEN 'low_sessions' THEN 2 ELSE 3 END,
         r.created_at DESC`, params);
     res.json(r.rows);
   } catch (e) { next(e); }

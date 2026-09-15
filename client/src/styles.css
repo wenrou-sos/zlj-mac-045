@@ -153,8 +153,15 @@ tr:hover td { background: #1a212b; }
 .btn.primary:hover { background: var(--accent-dark); }
 .btn.danger { color: var(--danger); border-color: rgba(242,85,85,.4); }
 .btn.danger:hover { background: rgba(242,85,85,.12); }
+.btn.warn { color: var(--warn); border-color: rgba(245,165,36,.45); }
+.btn.warn:hover { background: rgba(245,165,36,.12); }
 .btn.sm { padding: 4px 10px; font-size: 12px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.warn-text { color: var(--warn); }
+.info-text { color: var(--info); }
+.input-warn { border-color: rgba(242,85,85,.6); }
+.field textarea { resize: vertical; border-radius: 8px; }
 
 /* ---------- 表单 ---------- */
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }

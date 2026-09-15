@@ -16,6 +16,7 @@ import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
+import repairOrdersRouter from './routes/repairOrders.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -34,6 +35,7 @@ app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
+app.use('/api/repair-orders', repairOrdersRouter);
 
 // 重置样例数据
 app.post('/api/dev/reseed', async (req, res, next) => {

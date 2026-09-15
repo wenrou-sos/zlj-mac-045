@@ -124,12 +124,6 @@ CREATE TABLE IF NOT EXISTS classes (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
--- 幂等保证：同一个模板在同一时刻只能有一节“未取消”的课
--- （重复生成不会排出两套；已取消的课不占位，允许重新补排）
-CREATE UNIQUE INDEX IF NOT EXISTS uq_class_template_occurrence
-  ON classes(template_id, start_at)
-  WHERE template_id IS NOT NULL AND status <> 'canceled';
-
 -- 预约
 CREATE TABLE IF NOT EXISTS bookings (
   id            SERIAL PRIMARY KEY,
@@ -171,15 +165,15 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
-CREATE INDEX IF NOT EXISTS idx_classes_batch ON classes(generation_batch_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
-CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
-CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
-CREATE INDEX IF NOT EXISTS idx_venue_unavailable ON venue_unavailable(venue_id, start_date, end_date);
+-- ============================================================================
+-- 升级顺序说明（重要）：
+--   老库的 classes 是旧版本建的，CREATE TABLE IF NOT EXISTS 不会自动补列。
+--   因此必须严格按「① 建全部表 → ② 幂等补列 → ③ 建索引」执行：
+--   任何引用 template_id / generation_batch_id 的索引都必须排在补列之后，
+--   否则老库升级会报 column "template_id" does not exist 并中断启动。
+-- ============================================================================
 
--- ---- 幂等迁移：给旧版库补充周课模板相关字段（PGlite / PostgreSQL 通用）----
+-- ② 幂等补列：给旧版库补充周课模板相关字段（PGlite / PostgreSQL 通用）
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns
@@ -191,3 +185,19 @@ BEGIN
     ALTER TABLE classes ADD COLUMN generation_batch_id INTEGER REFERENCES class_generation_batches(id) ON DELETE SET NULL;
   END IF;
 END $$;
+
+-- ③ 补列完成后再统一建索引（新库列已在 CREATE TABLE 内，老库由上面补列，二者均安全）
+CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
+CREATE INDEX IF NOT EXISTS idx_classes_batch ON classes(generation_batch_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
+CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_venue_unavailable ON venue_unavailable(venue_id, start_date, end_date);
+
+-- 幂等保证：同一个模板在同一时刻只能有一节“未取消”的课
+-- （重复生成不会排出两套；已取消的课不占位，允许重新补排）
+-- 老库历史课程 template_id 为 NULL，被 WHERE 条件排除，不会触发唯一冲突
+CREATE UNIQUE INDEX IF NOT EXISTS uq_class_template_occurrence
+  ON classes(template_id, start_at)
+  WHERE template_id IS NOT NULL AND status <> 'canceled';

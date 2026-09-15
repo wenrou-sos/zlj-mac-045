@@ -218,24 +218,31 @@ router.post('/generate', async (req, res, next) => {
             continue;
           }
 
-          let cls;
-          try {
-            cls = (await tx.query(
-              `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity,
-                 cost_sessions, template_id, generation_batch_id)
-               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
-              [tpl.title, tpl.coach_id, tpl.venue_id, start_at, end_at,
-                tpl.capacity, tpl.cost_sessions, tpl.id, batchId]
-            )).rows[0];
-          } catch (e) {
-            // 数据库级幂等索引兜底（并发/同刻重复）
-            if (e.code === '23505') {
-              existing.push(base);
-              continue;
-            }
-            throw e;
+          const ins = await tx.query(
+            // 幂等插入：命中 (template_id,start_at) 部分唯一索引时 DO NOTHING，
+            // 绝不能用 INSERT 后 catch 23505 —— PG/PGlite 事务内一旦报错便进入
+            // aborted，后续语句全部 25P02，会连累整批生成回滚。
+            `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity,
+               cost_sessions, template_id, generation_batch_id)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             ON CONFLICT (template_id, start_at)
+               WHERE template_id IS NOT NULL AND status <> 'canceled'
+             DO NOTHING
+             RETURNING id`,
+            [tpl.title, tpl.coach_id, tpl.venue_id, start_at, end_at,
+              tpl.capacity, tpl.cost_sessions, tpl.id, batchId]
+          );
+          if (ins.rows.length > 0) {
+            created.push({ ...base, class_id: ins.rows[0].id });
+          } else {
+            // 并发或同刻已被占（ON CONFLICT 未报错、事务仍健康）：查出已存在的课并报告
+            const existed = await tx.query(
+              `SELECT id FROM classes
+               WHERE template_id=$1 AND start_at=$2 AND status <> 'canceled' LIMIT 1`,
+              [tpl.id, start_at]
+            );
+            existing.push({ ...base, class_id: existed.rows[0]?.id ?? null });
           }
-          created.push({ ...base, class_id: cls.id });
         }
       }
 

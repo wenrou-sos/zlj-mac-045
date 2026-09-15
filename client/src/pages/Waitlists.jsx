@@ -37,8 +37,8 @@ export default function Waitlists() {
     return () => clearInterval(t);
   }, []);
 
-  async function confirm(w) {
-    if (!confirm(`确认 ${w.member_name} 候补转正「${w.title}」吗？\n确认后预约生效，核销码 ${w.verify_code}`)) return;
+  async function confirmWait(w) {
+    if (!window.confirm(`确认 ${w.member_name} 候补转正「${w.title}」吗？\n确认后预约生效，核销码 ${w.verify_code}`)) return;
     try {
       const r = await api.post(`/waitlists/${w.id}/confirm`, {});
       notify(`已确认，核销码 ${r.verify_code}`, 'success');
@@ -46,11 +46,11 @@ export default function Waitlists() {
     } catch (e) { notify(e.message, 'error'); }
   }
 
-  async function abandon(w) {
+  async function abandonWait(w) {
     const tip = w.status === 'promoted'
       ? '放弃后将取消已转正的预约并退还预扣次数，名额自动递补给下一位'
       : '退出后候补名额将顺延给后面的会员';
-    if (!confirm(`确定放弃「${w.title}」的候补吗？\n${tip}`)) return;
+    if (!window.confirm(`确定放弃「${w.title}」的候补吗？\n${tip}`)) return;
     try {
       const r = await api.post(`/waitlists/${w.id}/abandon`, {});
       notify(r.refund_sessions > 0 ? `已放弃并退还 ${r.refund_sessions} 次，正在递补下一位` : '已退出候补队列', 'success');
@@ -121,9 +121,9 @@ export default function Waitlists() {
                     </td>
                     <td className="nowrap">
                       {w.status === 'promoted' && !overdue &&
-                        <button className="btn sm primary" onClick={() => confirm(w)}>确认转正</button>}
+                        <button className="btn sm primary" onClick={() => confirmWait(w)}>确认转正</button>}
                       {['waiting', 'promoted'].includes(w.status) &&
-                        <button className="btn sm danger" style={{ marginLeft: 6 }} onClick={() => abandon(w)}>
+                        <button className="btn sm danger" style={{ marginLeft: 6 }} onClick={() => abandonWait(w)}>
                           {w.status === 'promoted' ? '放弃名额' : '退出候补'}
                         </button>}
                       {!['waiting', 'promoted'].includes(w.status) && <span className="muted">—</span>}

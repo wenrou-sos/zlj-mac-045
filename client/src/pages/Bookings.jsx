@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, fmtDateTime, BOOKING_STATUS, todayStr, addDaysStr } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -60,7 +61,8 @@ export default function Bookings() {
         {tabs.map(([k, t]) => (
           <button key={t} className={`btn ${status === k ? 'primary' : ''}`} onClick={() => setStatus(k)}>{t}</button>
         ))}
-        <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={openCreate}>+ 代客约课</button>
+        {can('booking_create') &&
+          <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={openCreate}>+ 代客约课</button>}
       </div>
 
       <div className="panel">
@@ -79,7 +81,7 @@ export default function Bookings() {
                   <td className="code-chip">{b.verify_code}</td>
                   <td><span className={`badge ${BOOKING_STATUS[b.status]?.cls || 'muted'}`}>{BOOKING_STATUS[b.status]?.text || b.status}</span></td>
                   <td className="muted" style={{ fontSize: 12, maxWidth: 180 }}>{b.cancel_reason || '—'}</td>
-                  <td>{b.status === 'booked' && new Date(b.start_at) > new Date() &&
+                  <td>{can('booking_cancel') && b.status === 'booked' && new Date(b.start_at) > new Date() &&
                     <button className="btn sm danger" onClick={() => cancel(b)}>取消预约</button>}</td>
                 </tr>
               ))}

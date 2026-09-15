@@ -1,4 +1,7 @@
 -- 健身场馆管理系统 表结构（标准 SQL，兼容 PostgreSQL / PGlite）
+-- 注意：PGlite 建表时即校验外键目标存在，因此本脚本严格按依赖顺序排列。
+
+-- ============ 业务基础表 ============
 
 CREATE TABLE IF NOT EXISTS coaches (
   id            SERIAL PRIMARY KEY,
@@ -121,8 +124,91 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_at    TIMESTAMPTZ DEFAULT now()
 );
 
+-- ============ 操作员账号 / 角色 / 会话 / 审计 / 退款 ============
+
+-- 操作员账号：role = manager（店长）/ front_desk（前台）/ coach（教练）
+-- coach 角色通过 coach_id 关联教练档案，用于「只能看自己的课和排班」的数据级隔离
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  username      VARCHAR(50) UNIQUE NOT NULL,   -- 登录名
+  display_name  VARCHAR(50) NOT NULL,          -- 显示名（审计里展示）
+  password_hash VARCHAR(200) NOT NULL,         -- scrypt: salt:hash
+  role          VARCHAR(12) NOT NULL CHECK (role IN ('manager','front_desk','coach')),
+  coach_id      INTEGER REFERENCES coaches(id) ON DELETE SET NULL,
+  status        VARCHAR(10) NOT NULL DEFAULT 'active', -- active / disabled
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- 登录会话（不透明 token；服务端持有，可通过停用账号/删除会话立即失效）
+CREATE TABLE IF NOT EXISTS user_sessions (
+  token         VARCHAR(80) PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at    TIMESTAMPTZ DEFAULT now(),
+  last_used_at  TIMESTAMPTZ DEFAULT now(),
+  user_agent    VARCHAR(255)
+);
+
+-- 退款单据：退款或退次有争议时，从审计记录反查到的具体业务单据
+CREATE TABLE IF NOT EXISTS refunds (
+  id            SERIAL PRIMARY KEY,
+  card_id       INTEGER REFERENCES membership_cards(id) ON DELETE SET NULL,
+  member_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  booking_id    INTEGER REFERENCES bookings(id) ON DELETE SET NULL, -- 关联预约（按单退时）
+  amount        NUMERIC(10,2) NOT NULL,              -- 退款金额
+  reason        VARCHAR(255),
+  refunded_at   TIMESTAMPTZ DEFAULT now(),
+  operator_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  operator_name VARCHAR(50) NOT NULL
+);
+
+-- 历史续费记录关联到操作员账号（原有 operator 文本列保留，二者并存便于迁移核对）
+ALTER TABLE renewals ADD COLUMN IF NOT EXISTS operator_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+-- 审计日志：只追加。UPDATE/DELETE/TRUNCATE 由文件末尾的触发器在数据库层拒绝，
+-- 即使有人拿到业务数据库连接也无法篡改或抹除历史。
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id            BIGSERIAL PRIMARY KEY,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),  -- 操作时间
+  actor_id      INTEGER,                             -- 操作人 users.id（历史数据可能为空）
+  actor_name    VARCHAR(50) NOT NULL,                -- 操作人姓名（冗余留存，账号删除后仍可读）
+  actor_role    VARCHAR(12),
+  action        VARCHAR(32) NOT NULL,                -- 动作类型，见服务端 AUDIT_ACTIONS
+  target_type   VARCHAR(20),                         -- card / booking / class / refund / renewal ...
+  target_id     VARCHAR(40),                         -- 业务单据主键
+  card_no       VARCHAR(20),                         -- 关键信息：卡号（便于争议检索）
+  member_id     INTEGER,
+  amount        NUMERIC(12,2),                       -- 涉及金额（开卡/续费/退款/改价）
+  detail        JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 关键信息 & 改动前后的值
+  ip            VARCHAR(64),
+  user_agent    VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_card ON audit_logs(card_no);
+CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_logs(target_type, target_id);
+
+-- ============ 常规索引 ============
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+
+-- ============ 审计日志防篡改：数据库层禁止修改 / 删除 / 清空 ============
+-- 业务侧只允许 INSERT。任何 UPDATE / DELETE / TRUNCATE 直接抛错，
+-- 连绕过应用直连数据库都无法抹掉记录。
+CREATE OR REPLACE FUNCTION audit_block_mutation() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'audit_logs 为只追加审计记录，禁止 %（已被数据库触发器拦截）', TG_OP;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_audit_no_update ON audit_logs;
+CREATE TRIGGER trg_audit_no_update BEFORE UPDATE OR DELETE ON audit_logs
+  FOR EACH ROW EXECUTE FUNCTION audit_block_mutation();
+
+-- TRUNCATE 是语句级事件，用 TRUNCATE 触发器拦截
+DROP TRIGGER IF EXISTS trg_audit_no_truncate ON audit_logs;
+CREATE TRIGGER trg_audit_no_truncate BEFORE TRUNCATE ON audit_logs
+  FOR EACH STATEMENT EXECUTE FUNCTION audit_block_mutation();

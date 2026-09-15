@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, todayStr, addDaysStr, weekdayCN } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -20,7 +21,19 @@ export default function Schedules() {
   const load = () =>
     api.get(`/schedules?start=${days[0]}&end=${days[6]}`).then(setList);
   useEffect(() => { load(); }, [startOffset]);
-  useEffect(() => { api.get('/coaches').then((r) => setCoaches(r.filter((c) => c.status === 'active'))); }, []);
+  useEffect(() => {
+    if (can('schedules_write')) api.get('/coaches').then((r) => setCoaches(r.filter((c) => c.status === 'active'))).catch(() => {});
+  }, []);
+
+  async function openCreate() {
+    let cs = coaches;
+    if (cs.length === 0) {
+      cs = (await api.get('/coaches')).filter((c) => c.status === 'active');
+      setCoaches(cs);
+    }
+    setForm({ coach_id: cs[0]?.id || '', work_date: days[0], start_time: '09:00', end_time: '17:00', shift_type: 'normal' });
+    setModal(true);
+  }
 
   async function save() {
     try {
@@ -48,10 +61,9 @@ export default function Schedules() {
         <b>{days[0]} ~ {days[6]}</b>
         <button className="btn" onClick={() => setStartOffset((d) => d + 7)}>下一周 →</button>
         <button className="btn" onClick={() => setStartOffset(0)}>本周</button>
-        <button className="btn primary" style={{ marginLeft: 'auto' }}
-          onClick={() => { setForm({ coach_id: coaches[0]?.id || '', work_date: days[0], start_time: '09:00', end_time: '17:00', shift_type: 'normal' }); setModal(true); }}>
-          + 新增排班
-        </button>
+        {can('schedules_write') && (
+          <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={openCreate}>+ 新增排班</button>
+        )}
       </div>
 
       <div className="panel">
@@ -73,7 +85,8 @@ export default function Schedules() {
                     </div>
                     <div className="row2">
                       <span className="mono">{s.start_time} - {s.end_time}</span>
-                      <button className="btn sm danger" style={{ padding: '1px 7px' }} onClick={() => remove(s)}>删</button>
+                      {can('schedules_write') &&
+                        <button className="btn sm danger" style={{ padding: '1px 7px' }} onClick={() => remove(s)}>删</button>}
                     </div>
                   </div>
                 ))}

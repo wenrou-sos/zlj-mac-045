@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { query } from '../db.js';
+import { requirePerm } from '../auth.js';
 
 const router = Router();
 
-// 场地 + 各场地器械数
-router.get('/', async (req, res, next) => {
+// 场地 + 各场地器械数（店长/前台）
+router.get('/', requirePerm('venues_view'), async (req, res, next) => {
   try {
     const r = await query(`
       SELECT v.*,
@@ -15,7 +16,7 @@ router.get('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', requirePerm('venues_write'), async (req, res, next) => {
   try {
     const { name, capacity, location } = req.body;
     const r = await query(
@@ -26,7 +27,7 @@ router.post('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requirePerm('venues_write'), async (req, res, next) => {
   try {
     const { name, capacity, location, status } = req.body;
     const r = await query(
@@ -38,7 +39,7 @@ router.put('/:id', async (req, res, next) => {
 });
 
 // 器械列表（?venue_id= &status=）
-router.get('/equipment/all', async (req, res, next) => {
+router.get('/equipment/all', requirePerm('venues_view'), async (req, res, next) => {
   try {
     const { venue_id, status } = req.query;
     const conds = [];
@@ -54,7 +55,7 @@ router.get('/equipment/all', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/equipment', async (req, res, next) => {
+router.post('/equipment', requirePerm('venues_write'), async (req, res, next) => {
   try {
     const { venue_id, name, asset_no, quantity, status, purchased_at, note } = req.body;
     const r = await query(
@@ -70,7 +71,7 @@ router.post('/equipment', async (req, res, next) => {
 });
 
 // 更新器械（主要用于状态变更：正常 / 维修中 / 报废）
-router.put('/equipment/:id', async (req, res, next) => {
+router.put('/equipment/:id', requirePerm('venues_write'), async (req, res, next) => {
   try {
     const { venue_id, name, quantity, status, note } = req.body;
     const r = await query(

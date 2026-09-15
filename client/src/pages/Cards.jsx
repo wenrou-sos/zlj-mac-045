@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, fmtDate, CARD_STATUS } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -12,6 +13,11 @@ export default function Cards() {
   const [showRecords, setShowRecords] = useState(false);
   const [records, setRecords] = useState([]);
   const [form, setForm] = useState({ amount: 0, extend_days: 30, add_sessions: 10 });
+  // 改价 / 退款弹窗
+  const [priceCard, setPriceCard] = useState(null);
+  const [priceForm, setPriceForm] = useState({ price: 0, reason: '' });
+  const [refundCard, setRefundCard] = useState(null);
+  const [refundForm, setRefundForm] = useState({ amount: 0, reason: '', sessions: 0 });
 
   const load = () =>
     api.get(`/cards?status=${status}&keyword=${encodeURIComponent(keyword)}`).then(setList);
@@ -44,6 +50,28 @@ export default function Cards() {
     catch (e) { notify(e.message, 'error'); }
   }
 
+  async function submitPrice() {
+    try {
+      await api.put(`/cards/${priceCard.id}/price`, priceForm);
+      notify('价格已修改（已记录审计）', 'success');
+      setPriceCard(null);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+
+  async function submitRefund() {
+    try {
+      await api.post(`/cards/${refundCard.id}/refund`, {
+        amount: Number(refundForm.amount) || 0,
+        sessions: refundCard.card_type === 'count' ? Number(refundForm.sessions) || 0 : 0,
+        reason: refundForm.reason,
+      });
+      notify('退款/退次已处理并记录审计', 'success');
+      setRefundCard(null);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+
   async function viewRecords() {
     setRecords(await api.get('/cards/renewals/list'));
     setShowRecords(true);
@@ -54,7 +82,7 @@ export default function Cards() {
   return (
     <div>
       <div className="page-title">会员卡</div>
-      <div className="page-sub">开卡、续费、冻结；次卡按约课扣次，取消规则内自动退次</div>
+      <div className="page-sub">开卡、续费、冻结；次卡按约课扣次，取消规则内自动退次。改价与退款仅店长可操作</div>
 
       <div className="toolbar">
         {tabs.map(([k, t]) => (
@@ -70,7 +98,7 @@ export default function Cards() {
       <div className="panel">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>卡号</th><th>会员</th><th>手机</th><th>卡种</th><th>类型</th><th>有效期</th><th>剩余次数</th><th>状态</th><th>操作</th></tr></thead>
+            <thead><tr><th>卡号</th><th>会员</th><th>手机</th><th>卡种</th><th>类型</th><th>有效期</th><th>剩余次数</th><th>价格</th><th>状态</th><th>操作</th></tr></thead>
             <tbody>
               {list.map((c) => (
                 <tr key={c.id}>
@@ -85,16 +113,28 @@ export default function Cards() {
                   <td>{c.card_type === 'count'
                     ? <b className={c.remaining <= 3 ? 'badge warn' : ''} style={c.remaining <= 3 ? {} : { color: 'var(--accent)' }}>{c.remaining} / {c.total_sessions}</b>
                     : '不限'}</td>
+                  <td>¥{Number(c.price).toFixed(0)}
+                    {can('cards_price') && (
+                      <button className="btn sm" style={{ marginLeft: 6, padding: '1px 7px' }}
+                        onClick={() => { setPriceForm({ price: Number(c.price), reason: '' }); setPriceCard(c); }}>改价</button>
+                    )}
+                  </td>
                   <td><span className={`badge ${CARD_STATUS[c.status]?.cls}`}>{CARD_STATUS[c.status]?.text}</span></td>
                   <td className="nowrap">
-                    <button className="btn sm primary" onClick={() => openRenew(c)}>续费</button>
-                    <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => freeze(c)}>
-                      {c.status === 'frozen' ? '解冻' : '冻结'}
-                    </button>
+                    {can('cards_renew') && <button className="btn sm primary" onClick={() => openRenew(c)}>续费</button>}
+                    {can('cards_freeze') && (
+                      <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => freeze(c)}>
+                        {c.status === 'frozen' ? '解冻' : '冻结'}
+                      </button>
+                    )}
+                    {can('refund') && (
+                      <button className="btn sm danger" style={{ marginLeft: 6 }}
+                        onClick={() => { setRefundForm({ amount: 0, reason: '', sessions: 0 }); setRefundCard(c); }}>退款/退次</button>
+                    )}
                   </td>
                 </tr>
               ))}
-              {list.length === 0 && <tr><td colSpan={9} className="empty">没有符合条件的会员卡</td></tr>}
+              {list.length === 0 && <tr><td colSpan={10} className="empty">没有符合条件的会员卡</td></tr>}
             </tbody>
           </table>
         </div>
@@ -127,6 +167,48 @@ export default function Cards() {
         </Modal>
       )}
 
+      {priceCard && (
+        <Modal title={`改价 · ${priceCard.card_no}（${priceCard.plan_name}）`} onClose={() => setPriceCard(null)}>
+          <div className="muted" style={{ marginBottom: 10, fontSize: 12.5 }}>
+            原价 <b>¥{Number(priceCard.price).toFixed(2)}</b>，改价仅限店长，改动前后金额将记入审计
+          </div>
+          <div className="form-grid">
+            <label className="field">新价格（元）
+              <input type="number" value={priceForm.price} onChange={(e) => setPriceForm({ ...priceForm, price: Number(e.target.value) })} /></label>
+            <label className="field">改价原因（留痕）
+              <input placeholder="如：老会员折扣 / 录错更正" value={priceForm.reason}
+                onChange={(e) => setPriceForm({ ...priceForm, reason: e.target.value })} /></label>
+          </div>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setPriceCard(null)}>取消</button>
+            <button className="btn primary" onClick={submitPrice}>确认改价</button>
+          </div>
+        </Modal>
+      )}
+
+      {refundCard && (
+        <Modal title={`退款 / 退次 · ${refundCard.card_no}`} onClose={() => setRefundCard(null)}>
+          <div className="muted" style={{ marginBottom: 10, fontSize: 12.5 }}>
+            {refundCard.member_name} · {refundCard.plan_name}。退款需店长审批，生成退款单据并写入审计，争议时可凭审计反查
+          </div>
+          <div className="form-grid">
+            <label className="field">退款金额（元，不退钱填 0）
+              <input type="number" value={refundForm.amount} onChange={(e) => setRefundForm({ ...refundForm, amount: Number(e.target.value) })} /></label>
+            {refundCard.card_type === 'count' && (
+              <label className="field">退还次数（不填为 0）
+                <input type="number" value={refundForm.sessions} onChange={(e) => setRefundForm({ ...refundForm, sessions: Number(e.target.value) })} /></label>
+            )}
+            <label className="field" style={{ gridColumn: '1/-1' }}>退款 / 退次原因（必填，纠纷留痕）
+              <input placeholder="如：会员受伤无法到店、重复扣款退回" value={refundForm.reason}
+                onChange={(e) => setRefundForm({ ...refundForm, reason: e.target.value })} /></label>
+          </div>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setRefundCard(null)}>取消</button>
+            <button className="btn danger" onClick={submitRefund}>确认退款/退次</button>
+          </div>
+        </Modal>
+      )}
+
       {showRecords && (
         <Modal title="最近续费记录" onClose={() => setShowRecords(false)} wide>
           <div className="table-wrap">
@@ -141,7 +223,9 @@ export default function Cards() {
                     <td>¥{Number(r.amount).toFixed(0)}</td>
                     <td>{r.added_sessions ? `+${r.added_sessions} 次` : '—'}</td>
                     <td>{r.new_end_date ? fmtDate(r.new_end_date) : '—'}</td>
-                    <td className="muted">{r.operator}</td>
+                    <td>{r.operator_account
+                      ? `${r.operator_account}（${r.operator_role === 'manager' ? '店长' : '前台'}）`
+                      : <span className="muted">{r.operator || '历史操作员'}</span>}</td>
                   </tr>
                 ))}
                 {records.length === 0 && <tr><td colSpan={7} className="empty">暂无续费记录</td></tr>}

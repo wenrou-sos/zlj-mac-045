@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, fmtDate } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -39,8 +40,10 @@ export default function Members() {
           onChange={(e) => setKeyword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && load(keyword)} />
         <button className="btn" onClick={() => load(keyword)}>搜索</button>
-        <button className="btn primary" style={{ marginLeft: 'auto' }}
-          onClick={() => { setForm(empty); setModal({ mode: 'create' }); }}>+ 新增会员</button>
+        {can('members_write') && (
+          <button className="btn primary" style={{ marginLeft: 'auto' }}
+            onClick={() => { setForm(empty); setModal({ mode: 'create' }); }}>+ 新增会员</button>
+        )}
       </div>
 
       <div className="panel">
@@ -59,10 +62,12 @@ export default function Members() {
                   <td className="muted">{m.note || '—'}</td>
                   <td className="nowrap">
                     <Link className="btn sm" to={`/members/${m.id}`}>详情</Link>
-                    <button className="btn sm" style={{ marginLeft: 6 }}
-                      onClick={() => { setForm({ name: m.name, phone: m.phone, gender: m.gender, note: m.note || '' }); setModal({ mode: 'edit', member: m }); }}>
-                      编辑
-                    </button>
+                    {can('members_write') && (
+                      <button className="btn sm" style={{ marginLeft: 6 }}
+                        onClick={() => { setForm({ name: m.name, phone: m.phone, gender: m.gender, note: m.note || '' }); setModal({ mode: 'edit', member: m }); }}>
+                        编辑
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

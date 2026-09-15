@@ -31,8 +31,11 @@ const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
-  // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
+  // 1. 清空业务数据。
+  // 注意：users（操作员账号）与 audit_logs（只追加审计）不在清空范围内。
+  // users.coach_id 引用 coaches，先解绑教练账号挂接，跑完数据后由 bootstrap 重新关联。
+  await query(`UPDATE users SET coach_id = NULL WHERE role='coach'`);
+  await query(`TRUNCATE refunds, reminders, renewals, bookings, classes, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
@@ -270,6 +273,61 @@ export async function seedData() {
          OR (c.card_type='period' AND c.end_date <= CURRENT_DATE + INTERVAL '7 days')
        )`
   );
+
+  // 11. 历史续费 / 退款样例（renewals + refunds 业务单据与审计记录配套，
+  //     模拟升级前已有的收款流水，bootstrap 会把它们挂到操作员账号并补录审计）
+  const byName = async (name) =>
+    (await query(`SELECT id, display_name, role FROM users WHERE display_name=$1`, [name])).rows[0];
+  const frontUser = await byName('林前台');
+  const managerUser = await byName('周店长');
+
+  // [card_id, member_id, amount, dayOffset, addedSessions, newEndOffset, operator]
+  const demoRenewals = [
+    [1, 1, 2388, -120, null, 165, '林前台'], // 年卡续费一年
+    [3, 3, 899, -15, 30, null, '林前台'],    // 30次卡加 30 次
+    [6, 6, 699, -5, null, 60, '林前台'],     // 季卡续费
+  ];
+  for (const [cid, mid, amount, dayOff, addedSessions, endOff, opName] of demoRenewals) {
+    const ins = await query(
+      `INSERT INTO renewals(card_id, member_id, amount, new_end_date, added_sessions, renewed_at, operator, operator_id)
+       VALUES($1,$2,$3,$4,$5, $6::timestamptz, $7, $8) RETURNING id`,
+      [cid, mid, amount, endOff == null ? null : dateStr(endOff), addedSessions,
+        new Date(classTs(dayOff, 10, 30)).toISOString(), opName,
+        opName === '林前台' ? frontUser?.id ?? null : null]
+    );
+    const card = (await query(`SELECT card_no, plan_name, card_type FROM membership_cards WHERE id=$1`, [cid])).rows[0];
+    // 补一条与业务单据配套的审计（created_at 沿用历史时间）
+    await query(
+      `INSERT INTO audit_logs
+         (created_at, actor_id, actor_name, actor_role, action, target_type, target_id,
+          card_no, member_id, amount, detail, user_agent)
+       VALUES ($1,$2,$3,$4,'card_renew','renewal',$5,$6,$7,$8,$9::jsonb,'seed-history')`,
+      [new Date(classTs(dayOff, 10, 30)).toISOString(), frontUser?.id ?? null, '林前台', 'front_desk',
+        String(ins.rows[0].id), card.card_no, mid, amount,
+        JSON.stringify({ historical: true, plan_name: card.plan_name, card_type: card.card_type,
+          added_sessions: addedSessions, new_end_date: endOff == null ? null : dateStr(endOff) })]
+    );
+  }
+
+  // 退款样例：会员 4 的过期月卡退款 ¥100（店长审批），含业务单据与审计
+  if (managerUser) {
+    const card = (await query(`SELECT card_no FROM membership_cards WHERE id=4`)).rows[0];
+    const refundTs = new Date(classTs(-3, 15, 0)).toISOString();
+    const ins = await query(
+      `INSERT INTO refunds(card_id, member_id, amount, reason, refunded_at, operator_id, operator_name)
+       VALUES(4, 4, 100, '会员因病长期无法到店，店长审批按比例退款', $1::timestamptz, $2, $3) RETURNING id`,
+      [refundTs, managerUser.id, '周店长']
+    );
+    await query(
+      `INSERT INTO audit_logs
+         (created_at, actor_id, actor_name, actor_role, action, target_type, target_id,
+          card_no, member_id, amount, detail, user_agent)
+       VALUES ($1,$2,$3,$4,'refund','refund',$5,$6,4,100,$7::jsonb,'seed-history')`,
+      [refundTs, managerUser.id, '周店长', 'manager', String(ins.rows[0].id), card.card_no,
+        JSON.stringify({ historical: true, refund_id: ins.rows[0].id,
+          reason: '会员因病长期无法到店，店长审批按比例退款' })]
+    );
+  }
 
   const counts = {};
   for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {

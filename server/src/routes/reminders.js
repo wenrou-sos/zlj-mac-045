@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { refreshCardStatuses, regenerateReminders } from '../reminderLogic.js';
+import { requirePerm } from '../auth.js';
 
 const router = Router();
 
-// 提醒列表
-router.get('/', async (req, res, next) => {
+// 提醒列表（店长/前台；教练不展示提醒页）
+router.get('/', requirePerm('reminders_view'), async (req, res, next) => {
   try {
     await refreshCardStatuses();
     await regenerateReminders();
@@ -30,7 +31,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // 标记已通知 / 忽略
-router.post('/:id/status', async (req, res, next) => {
+router.post('/:id/status', requirePerm('reminders_update'), async (req, res, next) => {
   try {
     const { status } = req.body;
     if (!['pending', 'notified', 'ignored'].includes(status)) {

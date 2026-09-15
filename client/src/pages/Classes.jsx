@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours, localDateOf } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -24,11 +25,17 @@ export default function Classes() {
 
   const load = () =>
     api.get(`/classes?from=${isoAt(from, 0)}&to=${isoAt(to, 23, 59)}`).then(setList);
-  useEffect(() => {
-    load();
-    api.get('/coaches').then(setCoaches);
-    api.get('/venues').then(setVenues);
-  }, []);
+  useEffect(() => { load(); }, []);
+
+  async function openCreate() {
+    const [cs, vs] = await Promise.all([
+      api.get('/coaches').catch(() => []),
+      api.get('/venues').catch(() => []),
+    ]);
+    setCoaches(cs);
+    setVenues(vs);
+    setShowCreate(true);
+  }
 
   async function create() {
     try {
@@ -80,7 +87,9 @@ export default function Classes() {
         </b>
         <button className="btn" onClick={() => setDayOffset((d) => d + 1)}>后一天 →</button>
         <button className="btn" onClick={() => setDayOffset(0)}>回到今天</button>
-        <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={() => setShowCreate(true)}>+ 排一节课</button>
+        {can('classes_write') && (
+          <button className="btn primary" style={{ marginLeft: 'auto' }} onClick={openCreate}>+ 排一节课</button>
+        )}
       </div>
 
       <div className="class-grid">
@@ -104,7 +113,7 @@ export default function Classes() {
                 <span className="muted" style={{ fontSize: 12 }}>预约 {c.booked_count}/{c.capacity} · 已核销 {c.checked_count}</span>
                 <span style={{ display: 'flex', gap: 6 }}>
                   <button className="btn sm" onClick={() => openDetail(c)}>预约名单</button>
-                  {c.status === 'open' && new Date(c.start_at) > new Date() &&
+                  {can('class_cancel') && c.status === 'open' && new Date(c.start_at) > new Date() &&
                     <button className="btn sm danger" onClick={() => cancelClass(c)}>取消课程</button>}
                 </span>
               </div>
@@ -190,7 +199,7 @@ export default function Classes() {
             </table>
           </div>
           <div className="form-actions">
-            {detail.status === 'open' && new Date(detail.start_at) > new Date() &&
+            {can('class_cancel') && detail.status === 'open' && new Date(detail.start_at) > new Date() &&
               <button className="btn danger" onClick={() => cancelClass(detail)} style={{ marginRight: 'auto' }}>取消整节课（退次）</button>}
             <button className="btn" onClick={() => setDetail(null)}>关闭</button>
           </div>

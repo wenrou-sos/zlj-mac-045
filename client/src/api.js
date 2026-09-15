@@ -1,11 +1,28 @@
 // API 封装
 async function request(path, options = {}) {
+  const token = localStorage.getItem('powergym_token') || '';
   const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
+  // 审计导出等接口直接返回 CSV，交给调用方处理
+  if (res.headers.get('content-type')?.includes('application/json') !== true && res.ok) {
+    return res;
+  }
   const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    // 登录失效：清本地态并跳登录页（登录接口本身的 401 不跳转）
+    localStorage.removeItem('powergym_token');
+    localStorage.removeItem('powergym_user');
+    if (!path.startsWith('/auth/login') && location.pathname !== '/login') {
+      location.assign('/login');
+    }
+    throw new Error(data.error || '请先登录');
+  }
   if (!res.ok) {
     throw new Error(data.error || `请求失败 (${res.status})`);
   }

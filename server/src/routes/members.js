@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { query } from '../db.js';
+import { requirePerm } from '../auth.js';
 
 const router = Router();
 
-// 会员列表（支持姓名/手机号搜索）
-router.get('/', async (req, res, next) => {
+// 会员列表（支持姓名/手机号搜索）—— 店长/前台
+router.get('/', requirePerm('members_view'), async (req, res, next) => {
   try {
     const kw = req.query.keyword ? `%${req.query.keyword}%` : '%';
     const r = await query(`
@@ -19,7 +20,7 @@ router.get('/', async (req, res, next) => {
 });
 
 // 会员详情：含会员卡
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requirePerm('members_view'), async (req, res, next) => {
   try {
     const m = await query(`SELECT * FROM members WHERE id=$1`, [req.params.id]);
     if (m.rows.length === 0) return res.status(404).json({ error: '会员不存在' });
@@ -39,7 +40,7 @@ router.get('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/', async (req, res, next) => {
+router.post('/', requirePerm('members_write'), async (req, res, next) => {
   try {
     const { name, phone, gender, note } = req.body;
     if (!name || !phone) return res.status(400).json({ error: '姓名和手机号必填' });
@@ -54,7 +55,7 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requirePerm('members_write'), async (req, res, next) => {
   try {
     const { name, phone, gender, note } = req.body;
     const r = await query(

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, fmtDate, fmtDateTime, CARD_STATUS, BOOKING_STATUS, todayStr, addDaysStr } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -26,10 +27,27 @@ export default function MemberDetail() {
   // 续费表单
   const [renewForm, setRenewForm] = useState({ amount: 0, extend_days: 30, add_sessions: 10 });
 
+  // 退款/退次表单（仅店长）
+  const [refundCard, setRefundCard] = useState(null);
+  const [refundForm, setRefundForm] = useState({ amount: 0, sessions: 0, reason: '' });
+
   const load = () => api.get(`/members/${id}`).then(setM);
   useEffect(() => { load(); }, [id]);
 
   if (!m) return <div className="empty">加载中…</div>;
+
+  async function submitRefund() {
+    try {
+      await api.post(`/cards/${refundCard.id}/refund`, {
+        amount: Number(refundForm.amount) || 0,
+        sessions: refundCard.card_type === 'count' ? Number(refundForm.sessions) || 0 : 0,
+        reason: refundForm.reason,
+      });
+      notify('退款/退次已处理', 'success');
+      setRefundCard(null);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
 
   async function submitOpenCard() {
     const p = PLANS[planIdx];
@@ -89,7 +107,9 @@ export default function MemberDetail() {
 
       <div className="panel">
         <h3>💳 会员卡
-          <button className="btn sm primary" style={{ marginLeft: 'auto' }} onClick={() => setOpenCard(true)}>+ 开新卡</button>
+          {can('cards_open') && (
+            <button className="btn sm primary" style={{ marginLeft: 'auto' }} onClick={() => setOpenCard(true)}>+ 开新卡</button>
+          )}
         </h3>
         <div className="table-wrap">
           <table>
@@ -105,10 +125,16 @@ export default function MemberDetail() {
                   <td>¥{Number(c.price).toFixed(0)}</td>
                   <td><span className={`badge ${CARD_STATUS[c.status]?.cls}`}>{CARD_STATUS[c.status]?.text}</span></td>
                   <td className="nowrap">
-                    <button className="btn sm primary" onClick={() => openRenew(c)}>续费</button>
-                    <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => toggleFreeze(c)}>
-                      {c.status === 'frozen' ? '解冻' : '冻结'}
-                    </button>
+                    {can('cards_renew') && <button className="btn sm primary" onClick={() => openRenew(c)}>续费</button>}
+                    {can('cards_freeze') && (
+                      <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => toggleFreeze(c)}>
+                        {c.status === 'frozen' ? '解冻' : '冻结'}
+                      </button>
+                    )}
+                    {can('refund') && (
+                      <button className="btn sm danger" style={{ marginLeft: 6 }}
+                        onClick={() => { setRefundForm({ amount: 0, sessions: 0, reason: '' }); setRefundCard(c); }}>退款/退次</button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -188,6 +214,30 @@ export default function MemberDetail() {
           <div className="form-actions">
             <button className="btn" onClick={() => setRenewCard(null)}>取消</button>
             <button className="btn primary" onClick={submitRenew}>确认续费</button>
+          </div>
+        </Modal>
+      )}
+
+      {refundCard && (
+        <Modal title={`退款 / 退次 · ${refundCard.card_no}`} onClose={() => setRefundCard(null)}>
+          <div className="muted" style={{ marginBottom: 10, fontSize: 12.5 }}>
+            {refundCard.plan_name}
+            {refundCard.card_type === 'count' ? ` · 剩余 ${refundCard.remaining} 次` : ''}
+            。仅店长可操作，生成退款单据并写入审计
+          </div>
+          <div className="form-grid">
+            <label className="field">退款金额（元）
+              <input type="number" value={refundForm.amount} onChange={(e) => setRefundForm({ ...refundForm, amount: Number(e.target.value) })} /></label>
+            {refundCard.card_type === 'count' && (
+              <label className="field">退还次数
+                <input type="number" value={refundForm.sessions} onChange={(e) => setRefundForm({ ...refundForm, sessions: Number(e.target.value) })} /></label>
+            )}
+            <label className="field" style={{ gridColumn: '1/-1' }}>原因（必填，纠纷留痕）
+              <input value={refundForm.reason} onChange={(e) => setRefundForm({ ...refundForm, reason: e.target.value })} /></label>
+          </div>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setRefundCard(null)}>取消</button>
+            <button className="btn danger" onClick={submitRefund}>确认退款/退次</button>
           </div>
         </Modal>
       )}

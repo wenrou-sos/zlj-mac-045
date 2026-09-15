@@ -1,25 +1,34 @@
 import { Router } from 'express';
 import { query } from '../db.js';
+import { requirePerm } from '../auth.js';
 
 const router = Router();
 
 // 排班列表：?start=YYYY-MM-DD&end=YYYY-MM-DD
-router.get('/', async (req, res, next) => {
+// 教练角色只能看到自己的排班（SQL 层过滤）
+router.get('/', requirePerm('schedules_view'), async (req, res, next) => {
   try {
     const start = req.query.start;
     const end = req.query.end;
+    const coachScope = req.user.role === 'coach' ? 'AND s.coach_id=$3' : '';
+    const params = [start || null, end || null];
+    if (req.user.role === 'coach') {
+      if (!req.user.coach_id) return res.json([]);
+      params.push(req.user.coach_id);
+    }
     const r = await query(`
       SELECT s.*, c.name AS coach_name, c.specialty
       FROM coach_schedules s JOIN coaches c ON c.id=s.coach_id
       WHERE ($1::date IS NULL OR s.work_date >= $1)
         AND ($2::date IS NULL OR s.work_date <= $2)
-      ORDER BY s.work_date, s.start_time`, [start || null, end || null]);
+        ${coachScope}
+      ORDER BY s.work_date, s.start_time`, params);
     res.json(r.rows);
   } catch (e) { next(e); }
 });
 
-// 新增排班（校验：时间合法、与已有排班不重叠）
-router.post('/', async (req, res, next) => {
+// 新增排班（仅店长）：校验时间合法、与已有排班不重叠
+router.post('/', requirePerm('schedules_write'), async (req, res, next) => {
   try {
     const { coach_id, work_date, start_time, end_time, shift_type } = req.body;
     if (!coach_id || !work_date || !start_time || !end_time) {
@@ -46,7 +55,8 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-router.delete('/:id', async (req, res, next) => {
+// 删除排班（仅店长）
+router.delete('/:id', requirePerm('schedules_write'), async (req, res, next) => {
   try {
     await query(`DELETE FROM coach_schedules WHERE id=$1`, [req.params.id]);
     res.json({ ok: true });

@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { refreshCardStatuses } from '../reminderLogic.js';
+import { requirePerm, writeAudit } from '../auth.js';
 
 const router = Router();
 const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
 
 // 预约列表（支持课程 / 会员 / 状态过滤）
-router.get('/', async (req, res, next) => {
+// 教练角色只能看到自己所带课程的预约名单
+router.get('/', requirePerm('bookings_view'), async (req, res, next) => {
   try {
     const { status, class_id, member_id } = req.query;
     const conds = [];
@@ -14,16 +16,22 @@ router.get('/', async (req, res, next) => {
     if (status) { params.push(status); conds.push(`b.status=$${params.length}`); }
     if (class_id) { params.push(class_id); conds.push(`b.class_id=$${params.length}`); }
     if (member_id) { params.push(member_id); conds.push(`b.member_id=$${params.length}`); }
+    if (req.user.role === 'coach') {
+      if (!req.user.coach_id) return res.json([]);
+      params.push(req.user.coach_id);
+      conds.push(`cl.coach_id=$${params.length}`);
+    }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
     const r = await query(`
       SELECT b.*, m.name AS member_name, m.phone,
-        cl.title, cl.start_at, cl.end_at, v.name AS venue_name,
-        co.name AS coach_name
+        cl.title, cl.start_at, cl.end_at, cl.cost_sessions, v.name AS venue_name,
+        co.name AS coach_name, cc.card_no
       FROM bookings b
       JOIN members m ON m.id=b.member_id
       JOIN classes cl ON cl.id=b.class_id
       LEFT JOIN venues v ON v.id=cl.venue_id
       LEFT JOIN coaches co ON co.id=cl.coach_id
+      LEFT JOIN membership_cards cc ON cc.id=b.card_id
       ${where}
       ORDER BY cl.start_at DESC, b.id DESC
       LIMIT 300`, params);
@@ -31,8 +39,8 @@ router.get('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// 会员约课
-router.post('/', async (req, res, next) => {
+// 代客约课（前台/店长）
+router.post('/', requirePerm('booking_create'), async (req, res, next) => {
   try {
     const { class_id, member_id } = req.body;
     if (!class_id || !member_id) return res.status(400).json({ error: '课程和会员必填' });
@@ -87,6 +95,20 @@ router.post('/', async (req, res, next) => {
          VALUES($1,$2,$3,$4) RETURNING *`,
         [class_id, member_id, card.id, code]
       );
+      const member = (await tx.query(`SELECT name FROM members WHERE id=$1`, [member_id])).rows[0];
+      await writeAudit(tx, {
+        user: req.user, action: 'booking_create', targetType: 'booking', targetId: ins.rows[0].id,
+        cardNo: card.card_no, memberId: member_id,
+        detail: {
+          class_id, title: cls.title, start_at: cls.start_at,
+          verify_code: code, cost_sessions: cls.cost_sessions,
+          member_name: member?.name,
+          card_remaining: card.card_type === 'count'
+            ? { before: card.remaining, after: card.remaining - cls.cost_sessions }
+            : null,
+        },
+        req,
+      });
       return ins.rows[0];
     });
     res.status(201).json(result);
@@ -96,12 +118,17 @@ router.post('/', async (req, res, next) => {
   }
 });
 
-// 取消预约：开课前 2 小时外免费取消并退次；2 小时内提示扣次规则（仍允许取消但不退次）
-router.post('/:id/cancel', async (req, res, next) => {
+// 取消预约（前台/店长）：开课前 2 小时外免费取消并退次；不足 2 小时不退次
+router.post('/:id/cancel', requirePerm('booking_cancel'), async (req, res, next) => {
   try {
     const result = await withTransaction(async (tx) => {
       const b = (await tx.query(`
-        SELECT b.*, cl.start_at, cl.cost_sessions FROM bookings b JOIN classes cl ON cl.id=b.class_id
+        SELECT b.*, cl.title, cl.start_at, cl.cost_sessions,
+               cc.card_no, m.name AS member_name
+        FROM bookings b
+        JOIN classes cl ON cl.id=b.class_id
+        JOIN members m ON m.id=b.member_id
+        LEFT JOIN membership_cards cc ON cc.id=b.card_id
         WHERE b.id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!b) throw Object.assign(new Error('预约不存在'), { status: 404 });
       if (b.status !== 'booked') throw Object.assign(new Error('当前状态不可取消'), { status: 409 });
@@ -109,17 +136,45 @@ router.post('/:id/cancel', async (req, res, next) => {
       const hours = (new Date(b.start_at) - Date.now()) / 3600e3;
       if (hours < 0) throw Object.assign(new Error('课程已开始'), { status: 409 });
 
+      const reason = req.body.reason || null;
       const refund = hours >= 2;
+      let afterRemaining = null;
       if (refund && b.card_id) {
-        await tx.query(
+        const u = await tx.query(
           `UPDATE membership_cards SET remaining = LEAST(COALESCE(remaining,0) + $2, total_sessions)
-           WHERE id=$1 AND remaining IS NOT NULL`, [b.card_id, b.cost_sessions]
+           WHERE id=$1 AND remaining IS NOT NULL RETURNING remaining`, [b.card_id, b.cost_sessions]
         );
+        afterRemaining = u.rows[0]?.remaining ?? null;
       }
+      const cancelReason = reason || (refund
+        ? `会员取消（退还 ${b.cost_sessions} 次）`
+        : `临期取消（不足2小时，不退 ${b.cost_sessions} 次）`);
       await tx.query(
         `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
-        [b.id, req.body.reason || (refund ? `会员取消（退还 ${b.cost_sessions} 次）` : `临期取消（不足2小时，不退 ${b.cost_sessions} 次）`)]
+        [b.id, cancelReason]
       );
+      await writeAudit(tx, {
+        user: req.user, action: 'booking_cancel', targetType: 'booking', targetId: b.id,
+        cardNo: b.card_no, memberId: b.member_id,
+        detail: {
+          title: b.title, start_at: b.start_at, member_name: b.member_name,
+          reason: cancelReason, refund_sessions: refund ? b.cost_sessions : 0,
+        },
+        req,
+      });
+      // 实际退还课次（退次）单独留一条审计，方便按动作类型直接筛出所有退次
+      if (refund && b.card_id) {
+        await writeAudit(tx, {
+          user: req.user, action: 'session_refund', targetType: 'booking', targetId: b.id,
+          cardNo: b.card_no, memberId: b.member_id,
+          detail: {
+            source: 'booking_cancel', title: b.title,
+            sessions: b.cost_sessions, reason: cancelReason,
+            after_remaining: afterRemaining,
+          },
+          req,
+        });
+      }
       return { refund, refund_sessions: refund ? b.cost_sessions : 0 };
     });
     res.json({ ok: true, ...result });

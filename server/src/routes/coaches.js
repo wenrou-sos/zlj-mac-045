@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { query } from '../db.js';
+import { requirePerm } from '../auth.js';
 
 const router = Router();
 
-router.get('/', async (req, res, next) => {
+// 教练档案：店长 / 前台（教练角色不需要看教练管理页）
+router.get('/', requirePerm('coaches_view'), async (req, res, next) => {
   try {
     const r = await query(`
       SELECT co.*,
@@ -14,7 +16,8 @@ router.get('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post('/', async (req, res, next) => {
+// 新增教练：仅店长
+router.post('/', requirePerm('coaches_write'), async (req, res, next) => {
   try {
     const { name, phone, specialty, hourly_rate } = req.body;
     if (!name) return res.status(400).json({ error: '教练姓名必填' });
@@ -26,7 +29,8 @@ router.post('/', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.put('/:id', async (req, res, next) => {
+// 编辑 / 停用：仅店长
+router.put('/:id', requirePerm('coaches_write'), async (req, res, next) => {
   try {
     const { name, phone, specialty, hourly_rate, status } = req.body;
     const r = await query(

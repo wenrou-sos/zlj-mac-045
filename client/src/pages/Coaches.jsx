@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
+import { can } from '../auth.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -35,8 +36,10 @@ export default function Coaches() {
       <div className="page-sub">教练档案、专长与课时费；停用后不再出现在排课教练列表</div>
 
       <div className="toolbar">
-        <button className="btn primary" style={{ marginLeft: 'auto' }}
-          onClick={() => { setForm(empty); setModal({ mode: 'create' }); }}>+ 新增教练</button>
+        {can('coaches_write') && (
+          <button className="btn primary" style={{ marginLeft: 'auto' }}
+            onClick={() => { setForm(empty); setModal({ mode: 'create' }); }}>+ 新增教练</button>
+        )}
       </div>
 
       <div className="panel">
@@ -54,8 +57,10 @@ export default function Coaches() {
                   <td>{c.upcoming_shifts} 个班</td>
                   <td><span className={`badge ${c.status === 'active' ? 'ok' : 'muted'}`}>{c.status === 'active' ? '在岗' : '停用'}</span></td>
                   <td className="nowrap">
-                    <button className="btn sm" onClick={() => { setForm({ name: c.name, phone: c.phone || '', specialty: c.specialty || '', hourly_rate: Number(c.hourly_rate) }); setModal({ mode: 'edit', coach: c }); }}>编辑</button>
-                    <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => toggle(c)}>{c.status === 'active' ? '停用' : '启用'}</button>
+                    {can('coaches_write') &&
+                      <button className="btn sm" onClick={() => { setForm({ name: c.name, phone: c.phone || '', specialty: c.specialty || '', hourly_rate: Number(c.hourly_rate) }); setModal({ mode: 'edit', coach: c }); }}>编辑</button>}
+                    {can('coaches_write') &&
+                      <button className="btn sm" style={{ marginLeft: 6 }} onClick={() => toggle(c)}>{c.status === 'active' ? '停用' : '启用'}</button>}
                   </td>
                 </tr>
               ))}

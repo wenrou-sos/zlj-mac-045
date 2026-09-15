@@ -16,6 +16,8 @@ import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
+import reportsRouter from './routes/reports.js';
+import { ensureCaliber, freezeDuePeriods } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -34,6 +36,7 @@ app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
+app.use('/api/reports', reportsRouter);
 
 // 重置样例数据
 app.post('/api/dev/reseed', async (req, res, next) => {
@@ -53,6 +56,7 @@ async function init() {
   // 建表
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await execSql(schema);
+  await ensureCaliber();
 
   // 首次启动（无数据）自动写入样例数据
   const n = (await query(`SELECT count(*)::int AS n FROM members`)).rows[0].n;
@@ -65,6 +69,9 @@ async function init() {
   app.listen(port, () => {
     console.log(`健身场馆管理系统 API: http://localhost:${port}/api/health  (数据库: ${DB_MODE})`);
   });
+
+  // 历史已结束月份补冻结（不阻塞启动，幂等）；保证下个月再打开仍是当时口径
+  freezeDuePeriods().catch((e) => console.error('历史快照冻结失败：', e.message));
 }
 
 process.on('SIGINT', async () => { await closeDb(); process.exit(0); });

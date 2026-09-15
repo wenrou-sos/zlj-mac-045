@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "seed": "node src/runSeed.js"
+    "seed": "node src/runSeed.js",
+    "test:e2e": "node e2e-test.mjs",
+    "test:reports": "node report-test.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

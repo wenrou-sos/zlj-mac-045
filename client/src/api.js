@@ -1,7 +1,21 @@
 // API 封装
+
+// 当前角色（前台 front_desk / 店长 manager / 投资人 investor），存在 localStorage
+export function getRole() {
+  return localStorage.getItem('gym_role') || 'manager';
+}
+export function setRole(role) {
+  localStorage.setItem('gym_role', role);
+}
+export const ROLE_LABEL = { front_desk: '前台', manager: '店长', investor: '投资人' };
+
 async function request(path, options = {}) {
   const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Role': getRole(),
+      ...(options.headers || {}),
+    },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
@@ -85,3 +99,30 @@ export const EQUIP_STATUS = {
   maintenance: { text: '维修中', cls: 'warn' },
   scrapped: { text: '已报废', cls: 'muted' },
 };
+
+// ---- 报表工具 ----
+export function fmtPct(x, digits = 1) {
+  if (x === null || x === undefined) return '—';
+  return `${(x * 100).toFixed(digits)}%`;
+}
+export function fmtMoney(x) {
+  if (x === null || x === undefined) return '—';
+  return `¥${Number(x).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+// 带当前角色下载 CSV 导出
+export function downloadReport(path) {
+  return fetch(`/api${path}`, { headers: { 'X-User-Role': getRole() } })
+    .then(async (res) => {
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error(e.error || `导出失败 (${res.status})`);
+      }
+      const blob = await res.blob();
+      const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
+      const filename = m ? decodeURIComponent(m[1]) : 'export.csv';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    });
+}

@@ -14,6 +14,7 @@ import Schedules from './pages/Schedules.jsx';
 import Venues from './pages/Venues.jsx';
 import Checkins from './pages/Checkins.jsx';
 import Reminders from './pages/Reminders.jsx';
+import Reports from './pages/Reports.jsx';
 
 function ToastHost() {
   const [toasts, setToasts] = useState([]);
@@ -32,6 +33,7 @@ function ToastHost() {
 const nav = [
   { group: '运营总览' },
   { to: '/', label: '工作台', icon: '📊', end: true },
+  { to: '/reports', label: '经营报表', icon: '📈' },
   { to: '/checkins', label: '到店核销', icon: '✅' },
   { group: '会员与卡' },
   { to: '/members', label: '会员管理', icon: '👤' },
@@ -75,6 +77,7 @@ export default function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/reports" element={<Reports />} />
           <Route path="/checkins" element={<Checkins />} />
           <Route path="/members" element={<Members />} />
           <Route path="/members/:id" element={<MemberDetail />} />

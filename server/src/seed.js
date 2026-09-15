@@ -31,8 +31,9 @@ const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
-  // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
+  // 1. 清空（口径版本表保留：口径只能追加，不能被 reseed 抹掉）
+  await query(`TRUNCATE report_exports, refunds, report_snapshots, daily_group_metrics,
+    daily_metrics, reminders, renewals, bookings, classes, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
@@ -153,7 +154,7 @@ export async function seedData() {
     }
   }
 
-  // 8. 课表：过去 5 天 ~ 未来 10 天，每天 3~5 节
+  // 8. 课表：过去 60 天 ~ 未来 10 天，覆盖多个完整周/月
   // [课程, 教练, 场地, 容量, 消耗课次]
   const classTemplates = [
     ['动感单车', 3, 1, 20, 1], ['阴瑜伽', 2, 2, 15, 1], ['晨间 HIIT', 3, 3, 20, 1],
@@ -162,15 +163,16 @@ export async function seedData() {
   ];
   const hours = [9, 10, 14, 16, 19];
   const classIds = [];
-  for (let d = -5; d <= 10; d++) {
-    const count = randInt(3, 5);
+  for (let d = -60; d <= 10; d++) {
+    // 周末课多一些，保证周/月汇总有明显起伏
+    const count = weekdayOf(d) === 0 || weekdayOf(d) === 6 ? randInt(3, 5) : randInt(2, 4);
     const chosenHours = [...hours].sort(() => Math.random() - 0.5).slice(0, count).sort((a, b) => a - b);
     for (const h of chosenHours) {
       const [title, coachId, venueId, cap, cost] = pick(classTemplates);
       const r = await query(
         `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
-        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, cost, d < -1 ? 'finished' : 'open']
+        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, cost, 'open']
       );
       classIds.push(r.rows[0].id);
     }
@@ -178,65 +180,57 @@ export async function seedData() {
   // 随机取消一节课（未来）
   const futureClasses = classIds.slice(-10);
   await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(futureClasses)]);
+  // 再随机取消一节历史课，便于报表展示「取消课节」单列
+  const pastClasses = classIds.slice(0, classIds.length - 10);
+  await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(pastClasses)]);
 
-  // 9. 预约：给每节课随机 0~80% 上座率；过去的课大部分已核销
+  // 9. 预约：历史课按上座率随机生成（已核销/未到店/取消），未来课生成已预约
+  // 种子数据中历史预约只挂卡做展示，不再逐次扣减 remaining，避免次卡被历史数据扣穿
   const memberIds = Array.from({ length: 18 }, (_, i) => i + 1);
   const usedCodes = new Set();
   for (const classId of classIds) {
     const clsRes = await query('SELECT start_at, capacity, cost_sessions, status FROM classes WHERE id=$1', [classId]);
     const cls = clsRes.rows[0];
     if (cls.status === 'canceled') continue;
-    const cost = cls.cost_sessions;
     const isPast = new Date(cls.start_at) < new Date();
-    const n = Math.min(cls.capacity, randInt(0, Math.floor(cls.capacity * 0.8)));
+    // 历史课上座率 40%~90%，未来课 0~50%
+    const ratio = isPast ? (0.4 + Math.random() * 0.5) : Math.random() * 0.5;
+    const n = Math.min(cls.capacity, Math.floor(cls.capacity * ratio) + (Math.random() < 0.25 ? 1 : 0));
     const shuffled = [...memberIds].sort(() => Math.random() - 0.5).slice(0, n);
     for (const memberId of shuffled) {
-      // 取该会员一张有效且次数够的卡（次卡按 cost 扣次）
       const cardRes = await query(
-        `SELECT id FROM membership_cards
-         WHERE member_id=$1 AND status='active'
-           AND (end_date IS NULL OR end_date >= CURRENT_DATE)
-           AND (remaining IS NULL OR remaining >= $2)
-         LIMIT 1`,
-        [memberId, cost]
-      );
-      if (cardRes.rows.length === 0) continue;
-      const cardId = cardRes.rows[0].id;
-      // 次卡模拟已扣次（按课程消耗课次）
-      await query(
-        `UPDATE membership_cards SET remaining = GREATEST(remaining - $2, 0)
-         WHERE id=$1 AND remaining IS NOT NULL`,
-        [cardId, cost]
-      );
+        `SELECT id FROM membership_cards WHERE member_id=$1 ORDER BY id DESC LIMIT 1`, [memberId]);
+      const cardId = cardRes.rows[0]?.id || null;
       let code;
       do { code = String(randInt(100000, 999999)); } while (usedCodes.has(code));
       usedCodes.add(code);
 
       let status = 'booked';
       let checkedAt = null;
-      if (isPast && Math.random() < 0.85) {
-        status = 'checked';
-        checkedAt = new Date(new Date(cls.start_at).getTime() - 10 * 60000).toISOString();
-      } else if (isPast && Math.random() < 0.5) {
-        status = 'no_show';
-      } else if (!isPast && Math.random() < 0.12) {
+      let canceledAt = null;
+      let reason = null;
+      if (isPast) {
+        const r = Math.random();
+        if (r < 0.78) {
+          status = 'checked';
+          checkedAt = new Date(new Date(cls.start_at).getTime() - 10 * 60000).toISOString();
+        } else if (r < 0.92) {
+          status = 'no_show';
+        } else {
+          status = 'canceled';
+          canceledAt = new Date(new Date(cls.start_at).getTime() - 3 * 3600e3).toISOString();
+          reason = '会员取消（退还 1 次）';
+        }
+      } else if (Math.random() < 0.1) {
         status = 'canceled';
+        canceledAt = new Date().toISOString();
       }
       try {
         await query(
-          `INSERT INTO bookings(class_id, member_id, card_id, verify_code, status, checked_at, canceled_at)
-           VALUES($1,$2,$3,$4,$5,$6,$7)`,
-          [classId, memberId, cardId, code, status, checkedAt,
-            status === 'canceled' ? new Date().toISOString() : null]
+          `INSERT INTO bookings(class_id, member_id, card_id, verify_code, status, checked_at, canceled_at, cancel_reason)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [classId, memberId, cardId, code, status, checkedAt, canceledAt, reason]
         );
-        // 取消则按课程消耗课次退还
-        if (status === 'canceled') {
-          await query(
-            `UPDATE membership_cards SET remaining = LEAST(remaining + $2, total_sessions)
-             WHERE id=$1 AND remaining IS NOT NULL`,
-            [cardId, cost]
-          );
-        }
       } catch (e) {
         // 唯一冲突（同会员同课）直接忽略
       }
@@ -246,6 +240,44 @@ export async function seedData() {
   // 9.5 固定保留两张「次数不足但仍有效」的次卡，保证低余额提醒有样例
   await query(`UPDATE membership_cards SET remaining=2, status='active' WHERE card_no='VIP2026003'`);
   await query(`UPDATE membership_cards SET remaining=1, status='active' WHERE card_no='VIP2026016'`);
+
+  // 9.6 续费流水（过去 60 天分散生成），供卡种续费金额统计
+  const renewalCards = [1, 2, 6, 8, 10, 12, 13, 15, 18];
+  for (let i = 0; i < 16; i++) {
+    const cardId = pick(renewalCards);
+    const card = (await query(`SELECT member_id, plan_name FROM membership_cards WHERE id=$1`, [cardId])).rows[0];
+    const off = -randInt(1, 58);
+    const ts = `${dateStr(off)}T${String(pick([10, 15, 19])).padStart(2, '0')}:20:00+08:00`;
+    const amount = pick([268, 399, 699, 899, 1299, 2388]);
+    await query(
+      `INSERT INTO renewals(card_id, member_id, amount, new_end_date, added_sessions, renewed_at, operator)
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [cardId, card.member_id, amount,
+        pick([null, dateStr(off + 30), dateStr(off + 90)]),
+        pick([null, null, 10, 20]), ts, pick(['前台', '店长'])]
+    );
+  }
+
+  // 9.7 退款流水（2 笔开卡退款 + 1 笔续费退款），供净收入口径验证
+  await query(
+    `INSERT INTO refunds(source_type, source_id, card_id, member_id, amount, reason, refunded_at, created_by)
+     VALUES('card',$1,$1,$2,$3,$4,$5,'店长')`,
+    [4, 4, 268, '会员离城退卡', `${dateStr(-20)}T11:00:00+08:00`]);
+  await query(
+    `INSERT INTO refunds(source_type, source_id, card_id, member_id, amount, reason, refunded_at, created_by)
+     VALUES('card',$1,$1,$2,$3,$4,$5,'店长')`,
+    [14, 14, 268, '体验不满意退款', `${dateStr(-8)}T16:30:00+08:00`]);
+  const anyRenewal = (await query(`SELECT id, card_id, member_id FROM renewals LIMIT 1`)).rows[0];
+  if (anyRenewal) {
+    await query(
+      `INSERT INTO refunds(source_type, source_id, card_id, member_id, amount, reason, refunded_at, created_by)
+       VALUES('renewal',$1,$2,$3,$4,$5,$6,'店长')`,
+      [anyRenewal.id, anyRenewal.card_id, anyRenewal.member_id, 268, '重复续费冲正',
+        `${dateStr(-3)}T10:10:00+08:00`]);
+  }
+
+  // 9.8 会员 19/20 不放任何卡，构成「无有效卡」流失样例（巡检再按最近活动落 lost_at）
+  // （已在上方会员表中创建，这里仅确保没有卡残留）
 
   // 10. 生成提醒
   await query(
@@ -272,7 +304,8 @@ export async function seedData() {
   );
 
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules',
+    'classes','bookings','renewals','refunds','reminders']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

@@ -124,5 +124,109 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
+CREATE INDEX IF NOT EXISTS idx_bookings_status_class ON bookings(class_id, status);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
+CREATE INDEX IF NOT EXISTS idx_cards_created ON membership_cards(created_at);
+CREATE INDEX IF NOT EXISTS idx_renewals_date ON renewals(renewed_at);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_members_joined ON members(joined_at);
+
+-- ===================== 经营报表模块 =====================
+
+-- 会员生命周期：流失日（每日巡检满足流失规则时落戳，续费/重开卡自动清空）、最近到店日
+-- 用 DO 块做幂等加列（PGlite 多语句执行对 ADD COLUMN IF NOT EXISTS 兼容性不佳）
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='members' AND column_name='lost_at') THEN
+    ALTER TABLE members ADD COLUMN lost_at DATE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='members' AND column_name='last_active_at') THEN
+    ALTER TABLE members ADD COLUMN last_active_at DATE;
+  END IF;
+END $$;
+
+-- 退款流水（开卡退款 source_type='card'，续费退款 source_type='renewal'）
+CREATE TABLE IF NOT EXISTS refunds (
+  id            SERIAL PRIMARY KEY,
+  source_type   VARCHAR(10) NOT NULL,         -- card / renewal
+  source_id     INTEGER,                      -- membership_cards.id / renewals.id
+  card_id       INTEGER REFERENCES membership_cards(id) ON DELETE SET NULL,
+  member_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  amount        NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+  reason        VARCHAR(255),
+  refunded_at   TIMESTAMPTZ DEFAULT now(),
+  created_by    VARCHAR(50) DEFAULT '店长'
+);
+CREATE INDEX IF NOT EXISTS idx_refunds_date ON refunds(refunded_at);
+
+-- 口径版本：每次修改统计规则发一版，冻结的历史快照永久绑定当时版本
+CREATE TABLE IF NOT EXISTS caliber_versions (
+  version       SERIAL PRIMARY KEY,
+  published_at  TIMESTAMPTZ DEFAULT now(),
+  note          TEXT
+);
+
+-- 历史期间结账快照（周 / 月，结束 3 天后由系统自动冻结，payload 永久保留）
+CREATE TABLE IF NOT EXISTS report_snapshots (
+  id              SERIAL PRIMARY KEY,
+  period_type     VARCHAR(8) NOT NULL,        -- week / month
+  period_start    DATE NOT NULL,
+  report_key      VARCHAR(30) NOT NULL,       -- summary / attendance / members / card_sales
+  payload         JSONB NOT NULL,
+  caliber_version INTEGER NOT NULL,
+  generated_at    TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (period_type, period_start, report_key, caliber_version)
+);
+
+-- 日级经营汇总（只写已结束的日期，增量 upsert，周/月报表直接对它求和）
+CREATE TABLE IF NOT EXISTS daily_metrics (
+  day                     DATE PRIMARY KEY,
+  classes_scheduled       INTEGER DEFAULT 0,  -- 实际开课（不含整课取消）
+  classes_canceled        INTEGER DEFAULT 0,
+  seats_total             INTEGER DEFAULT 0,  -- 开课座位总数
+  seats_effective         INTEGER DEFAULT 0,  -- 有效预约人次（核销+未到店）
+  checkins                INTEGER DEFAULT 0,  -- 核销（实际到店）
+  no_shows                INTEGER DEFAULT 0,  -- 未到店
+  canceled_bookings       INTEGER DEFAULT 0,  -- 会员主动取消的预约
+  full_classes            INTEGER DEFAULT 0,  -- 满员课节
+  new_members             INTEGER DEFAULT 0,
+  lost_members            INTEGER DEFAULT 0,
+  card_sales_count        INTEGER DEFAULT 0,  -- 新办卡张数
+  card_sales_amount       NUMERIC(12,2) DEFAULT 0,
+  card_refund_count       INTEGER DEFAULT 0,
+  card_refund_amount      NUMERIC(12,2) DEFAULT 0,
+  renewal_count           INTEGER DEFAULT 0,
+  renewal_amount          NUMERIC(12,2) DEFAULT 0,
+  renewal_refund_count    INTEGER DEFAULT 0,
+  renewal_refund_amount   NUMERIC(12,2) DEFAULT 0
+);
+
+-- 日 × 维度（课程名 / 场地）汇总，供分组报表与下钻
+CREATE TABLE IF NOT EXISTS daily_group_metrics (
+  day                 DATE NOT NULL,
+  dim                 VARCHAR(8) NOT NULL,    -- course / venue
+  dim_key             VARCHAR(80) NOT NULL,   -- 课程标题 / 'venue:<id>'
+  dim_name            VARCHAR(80) NOT NULL,
+  classes_scheduled   INTEGER DEFAULT 0,
+  classes_canceled    INTEGER DEFAULT 0,
+  seats_total         INTEGER DEFAULT 0,
+  seats_effective     INTEGER DEFAULT 0,
+  checkins            INTEGER DEFAULT 0,
+  no_shows            INTEGER DEFAULT 0,
+  canceled_bookings   INTEGER DEFAULT 0,
+  full_classes        INTEGER DEFAULT 0,
+  PRIMARY KEY (day, dim, dim_key)
+);
+
+-- 导出审计（谁、什么角色、在什么时间范围、导了多少行、屏蔽了哪些字段）
+CREATE TABLE IF NOT EXISTS report_exports (
+  id            SERIAL PRIMARY KEY,
+  role          VARCHAR(12) NOT NULL,
+  report        VARCHAR(30) NOT NULL,
+  params        VARCHAR(255),
+  row_count     INTEGER DEFAULT 0,
+  masked_fields VARCHAR(255),
+  exported_at   TIMESTAMPTZ DEFAULT now()
+);

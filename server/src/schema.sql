@@ -224,9 +224,53 @@ CREATE TABLE IF NOT EXISTS daily_group_metrics (
 CREATE TABLE IF NOT EXISTS report_exports (
   id            SERIAL PRIMARY KEY,
   role          VARCHAR(12) NOT NULL,
+  username      VARCHAR(50),              -- 登录账号（角色只从登录会话取，无法伪造）
   report        VARCHAR(30) NOT NULL,
   params        VARCHAR(255),
   row_count     INTEGER DEFAULT 0,
   masked_fields VARCHAR(255),
   exported_at   TIMESTAMPTZ DEFAULT now()
 );
+
+-- 员工账号（演示账号：front/front123、manager/manager123、investor/investor123）
+CREATE TABLE IF NOT EXISTS app_secrets (
+  key        VARCHAR(50) PRIMARY KEY,
+  value      TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS staff_users (
+  id             SERIAL PRIMARY KEY,
+  username       VARCHAR(50) UNIQUE NOT NULL,
+  display_name   VARCHAR(50) NOT NULL,
+  role           VARCHAR(12) NOT NULL,   -- front_desk / manager / investor
+  password_hash  TEXT NOT NULL,          -- scrypt 哈希
+  password_salt  TEXT NOT NULL,
+  status         VARCHAR(10) DEFAULT 'active',
+  created_at     TIMESTAMPTZ DEFAULT now()
+);
+
+-- 登录会话：token 只以 SHA-256 哈希落库；角色随 staff_users 实时取，令牌本身不含角色、无法提权
+CREATE TABLE IF NOT EXISTS login_sessions (
+  token_hash  TEXT PRIMARY KEY,
+  staff_id    INTEGER NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
+  expires_at  TIMESTAMPTZ NOT NULL,
+  revoked     BOOLEAN DEFAULT FALSE,
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_staff ON login_sessions(staff_id);
+
+-- 日汇总物化水位：已计算的日期只算一次（昨天重算 1 天以接纳当日补录），历史查询不再全量重扫
+CREATE TABLE IF NOT EXISTS rollup_state (
+  day         DATE PRIMARY KEY,
+  computed_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 旧库补列（幂等）
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='report_exports' AND column_name='username') THEN
+    ALTER TABLE report_exports ADD COLUMN username VARCHAR(50);
+  END IF;
+END $$;

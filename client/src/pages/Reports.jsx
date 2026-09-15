@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import {
-  api, getRole, setRole, ROLE_LABEL,
+  api, getUser, getRole,
   fmtDate, fmtPct, fmtMoney, downloadReport, todayStr, addDaysStr,
 } from '../api.js';
 import { notify } from '../notify.js';
 import CaliberPanel from '../components/CaliberPanel.jsx';
 
-// 角色可见性（与后端 reports.js 的矩阵保持一致）
+// 角色能力（与后端 reports.js 矩阵一致；角色来源是登录会话，页面不能自行提升）
 const CAN = {
   front_desk: { money: false, phone: false, refunds: false, members: true, freeze: false },
   manager:    { money: true,  phone: true,  refunds: true,  members: true, freeze: true },
@@ -18,60 +18,72 @@ const PRESETS = [
   { key: '30d', label: '近 30 天' },
   { key: 'thisWeek', label: '本周' },
   { key: 'thisMonth', label: '本月' },
-  { key: 'lastMonth', label: '上月' },
 ];
 
 function defaultRange() {
   const to = todayStr();
   return { from: addDaysStr(to, -6), to };
 }
+// 周/月标准结束日（与后端 periodBounds 一致）
+function periodEnd(type, start) {
+  if (type === 'week') return addDaysStr(start, 6);
+  const d = new Date(`${start.slice(0, 8)}01T00:00:00Z`);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0));
+  return last.toISOString().slice(0, 10);
+}
 
 export default function Reports() {
-  const [role, setRoleState] = useState(getRole());
-  const can = CAN[role];
+  const user = getUser();
+  const role = getRole();
+  const can = CAN[role] || CAN.front_desk;
   const [range, setRange] = useState(defaultRange());
   const [preset, setPreset] = useState('7d');
   const [summary, setSummary] = useState(null);
   const [dim, setDim] = useState('course');
   const [groups, setGroups] = useState([]);
-  const [members, setMembers] = useState({ new: [], lost: [] });
-  const [cardSales, setCardSales] = useState([]);
+  const [attendanceFrozen, setAttendanceFrozen] = useState(false);
+  const [members, setMembers] = useState({ new: [], lost: [], frozen: false });
+  const [cardSales, setCardSales] = useState({ rows: [], frozen: false });
   const [refunds, setRefunds] = useState([]);
+  const [frozenPeriods, setFrozenPeriods] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [drill, setDrill] = useState(null); // {dim, key, name}
+  const [drill, setDrill] = useState(null);
 
   const qs = useMemo(() => `?from=${range.from}&to=${range.to}`, [range]);
 
-  async function loadAll() {
+  const loadAll = useCallback(async () => {
     setLoading(true);
     try {
       const tasks = [
         api.get(`/reports/summary${qs}`).then(setSummary),
-        api.get(`/reports/attendance${qs}&dim=${dim}`).then((d) => setGroups(d.groups)),
-        api.get(`/reports/card-sales${qs}`).then((d) => setCardSales(d.rows)),
+        api.get(`/reports/attendance${qs}&dim=${dim}`).then((d) => {
+          setGroups(d.groups); setAttendanceFrozen(!!d.frozen);
+        }),
+        api.get(`/reports/card-sales${qs}`).then((d) =>
+          setCardSales({ rows: d.rows, frozen: !!d.frozen })),
       ];
       if (can.members) {
         tasks.push(
           api.get(`/reports/members${qs}&kind=new`).then((d) =>
-            setMembers((m) => ({ ...m, new: d.rows }))),
+            setMembers((m) => ({ ...m, new: d.rows, frozen: !!d.frozen }))),
           api.get(`/reports/members${qs}&kind=lost`).then((d) =>
-            setMembers((m) => ({ ...m, lost: d.rows }))),
+            setMembers((m) => ({ ...m, lost: d.rows, frozen: !!d.frozen }))),
         );
       } else {
-        setMembers({ new: [], lost: [] });
+        setMembers({ new: [], lost: [], frozen: false });
       }
       if (can.refunds) tasks.push(api.get(`/reports/refunds${qs}`).then(setRefunds));
       else setRefunds([]);
       await Promise.all(tasks);
     } catch (e) { notify(e.message, 'error'); }
     finally { setLoading(false); }
-  }
+  }, [qs, dim, can.members, can.refunds]);
 
-  useEffect(() => { loadAll(); /* eslint-disable-next-line */ }, [qs, dim, role]);
+  useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => {
+    api.get('/reports/frozen-periods').then(setFrozenPeriods).catch(() => {});
+  }, []);
 
-  function switchRole(r) {
-    setRole(r); setRoleState(r);
-  }
   function applyPreset(key) {
     setPreset(key);
     const to = todayStr();
@@ -79,21 +91,22 @@ export default function Reports() {
     else if (key === '30d') setRange({ from: addDaysStr(to, -29), to });
     else if (key === 'thisWeek') {
       const d = new Date(to + 'T00:00:00');
-      const monday = addDaysStr(to, -((d.getDay() + 6) % 7));
-      setRange({ from: monday, to });
+      setRange({ from: addDaysStr(to, -((d.getDay() + 6) % 7)), to });
     } else if (key === 'thisMonth') setRange({ from: to.slice(0, 8) + '01', to });
-    else if (key === 'lastMonth') {
-      const d = new Date(to.slice(0, 8) + '01T00:00:00');
-      d.setMonth(d.getMonth() - 1);
-      const f = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-      const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-      setRange({ from: f, to: `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}` });
-    }
+  }
+  // 选历史结账期间：区间设为该周/月的精确闭区间 → 所有查询/导出自动读快照
+  function pickFrozen(ev) {
+    const id = ev.target.value;
+    if (!id) return;
+    const p = frozenPeriods.find((x) => `${x.period_type}|${x.period_start}` === id);
+    if (!p) return;
+    setPreset('');
+    setRange({ from: p.period_start, to: periodEnd(p.period_type, p.period_start) });
   }
 
   function exportCsv(report, extra = '') {
     downloadReport(`/reports/export/${report}${qs}${extra}`)
-      .then(() => notify('导出成功（已按当前角色脱敏）', 'ok'))
+      .then(() => notify('导出成功（已按登录角色脱敏，冻结期间为结账快照）', 'ok'))
       .catch((e) => notify(e.message, 'error'));
   }
   async function freeze(kind) {
@@ -102,25 +115,34 @@ export default function Reports() {
       const r = await api.post('/reports/freeze', { period_type: kind, period_start });
       notify(r.frozen ? `${kind === 'month' ? '月' : '周'}报表已冻结（口径 v${r.caliber_version}）` : r.note,
         r.frozen ? 'ok' : 'warn');
+      if (r.frozen) api.get('/reports/frozen-periods').then(setFrozenPeriods).catch(() => {});
     } catch (e) { notify(e.message, 'error'); }
   }
 
   return (
     <div>
       <div className="page-title">经营报表</div>
-      <div className="page-sub">自选区间统计上座率 / 满员率、会员新增流失、卡种销量与续费；历史月结账后口径永久冻结</div>
+      <div className="page-sub">
+        当前账号：<b>{user?.display_name}</b>（{user?.role_label}）·
+        自选区间统计上座率/满员率、会员新增流失、卡种销量与续费；历史月结账后口径永久冻结
+      </div>
 
-      {/* 工具栏：角色 + 时间范围 */}
       <div className="panel report-toolbar">
         <div className="tb-group">
-          <span className="tb-label">当前角色</span>
-          <div className="seg">
-            {Object.keys(CAN).map((r) => (
-              <button key={r} className={`seg-btn${role === r ? ' active' : ''}`} onClick={() => switchRole(r)}>
-                {ROLE_LABEL[r]}
-              </button>
-            ))}
-          </div>
+          {can.freeze && (
+            <>
+              <span className="tb-label">历史结账期间</span>
+              <select className="frozen-select" defaultValue="" onChange={pickFrozen}>
+                <option value="">（实时区间）</option>
+                {frozenPeriods.map((p) => (
+                  <option key={`${p.period_type}|${p.period_start}`}
+                    value={`${p.period_type}|${p.period_start}`}>
+                    {p.period_type === 'month' ? '月' : '周'} {p.period_start}（已冻结 v{p.caliber_version}）
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           {!can.phone && <span className="tag warn">名单导出不含手机号</span>}
           {!can.money && <span className="tag muted">当前角色不可见金额</span>}
         </div>
@@ -141,12 +163,21 @@ export default function Reports() {
         </div>
       </div>
 
+      {summary?.frozen && (
+        <div className="frozen-banner">
+          🔒 当前为<b>结账冻结快照</b>（{summary.frozen_period_type === 'month' ? '月' : '周'}
+          {' '}{range.from} ~ {range.to}，口径 v{summary.caliber_version}，
+          于 {fmtDate(summary.frozen_generated_at)} 冻结）。重查或导出都读取该快照，不受之后数据变动影响。
+        </div>
+      )}
+
       {summary && <SummaryCards s={summary} can={can} onExport={() => exportCsv('summary')} />}
 
       {/* 上座/满员 */}
       <div className="panel">
         <h3>
           🧺 课程上座率与满员率
+          {attendanceFrozen && <span className="tag" style={{ marginLeft: 8 }}>冻结快照</span>}
           <span className="seg" style={{ marginLeft: 12 }}>
             <button className={`seg-btn${dim === 'course' ? ' active' : ''}`} onClick={() => setDim('course')}>按课程</button>
             <button className={`seg-btn${dim === 'venue' ? ' active' : ''}`} onClick={() => setDim('venue')}>按场地</button>
@@ -182,7 +213,7 @@ export default function Reports() {
                   </td>
                 </tr>
               ))}
-              {groups.length === 0 && <tr><td colSpan={11}><div className="empty">该区间暂无课程数据</div></td></tr>}
+              {groups.length === 0 && <tr><td colSpan={11}><div className="empty">该区间暂无课程数据{attendanceFrozen ? '（冻结快照）' : ''}</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -192,6 +223,7 @@ export default function Reports() {
       {can.members ? (
         <div className="panel">
           <h3>👥 会员新增与流失
+            {members.frozen && <span className="tag" style={{ marginLeft: 8 }}>冻结快照</span>}
             <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => exportCsv('members', '&kind=new')}>导出新增</button>
             <button className="btn sm" onClick={() => exportCsv('members', '&kind=lost')}>导出流失</button>
           </h3>
@@ -201,12 +233,13 @@ export default function Reports() {
           </div>
         </div>
       ) : (
-        <div className="panel"><div className="empty">当前角色（{ROLE_LABEL[role]}）不可查看会员明细，仅可见上方汇总数</div></div>
+        <div className="panel"><div className="empty">当前角色（{user?.role_label}）不可查看会员明细，仅可见上方汇总数</div></div>
       )}
 
       {/* 卡种销量续费 */}
       <div className="panel">
         <h3>💳 各卡种销量与续费金额
+          {cardSales.frozen && <span className="tag" style={{ marginLeft: 8 }}>冻结快照</span>}
           <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={() => exportCsv('card-sales')}>导出 CSV</button>
         </h3>
         <div className="table-wrap">
@@ -218,7 +251,7 @@ export default function Reports() {
               {can.money && <><th>续费金额</th><th>退款金额</th><th>净额</th></>}
             </tr></thead>
             <tbody>
-              {cardSales.map((c) => (
+              {cardSales.rows.map((c) => (
                 <tr key={c.plan_name}>
                   <td className="strong">{c.plan_name}</td>
                   <td className="muted">{c.card_type === 'period' ? '期限卡' : c.card_type === 'count' ? '次卡' : '—'}</td>
@@ -230,7 +263,7 @@ export default function Reports() {
                   {can.money && <td className="strong">{fmtMoney(c.net_amount)}</td>}
                 </tr>
               ))}
-              {cardSales.length === 0 && <tr><td colSpan={can.money ? 8 : 4}><div className="empty">该区间暂无开卡/续费</div></td></tr>}
+              {cardSales.rows.length === 0 && <tr><td colSpan={can.money ? 8 : 4}><div className="empty">该区间暂无开卡/续费</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -268,7 +301,7 @@ export default function Reports() {
           <div>
             <div className="strong">🔒 历史期间结账</div>
             <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
-              区间结束满 3 天后可冻结；冻结后永久保留当时口径（{summary ? `当前 v${summary.caliber_version}` : ''}）的数据，未来口径升级也不改旧数。
+              区间结束满 3 天后可冻结；冻结后永久保留当时口径（{summary ? `当前 v${summary.caliber_version}` : ''}）的数据，重查与导出都走快照。
             </div>
           </div>
           <button className="btn" onClick={() => freeze('week')}>冻结所选周</button>
@@ -278,7 +311,7 @@ export default function Reports() {
 
       <CaliberPanel version={summary?.caliber_version} />
 
-      {drill && <DrillModal drill={drill} onClose={() => setDrill(null)} canPhone={can.phone} role={role} />}
+      {drill && <DrillModal drill={drill} onClose={() => setDrill(null)} canPhone={can.phone} />}
     </div>
   );
 }
@@ -299,6 +332,7 @@ function SummaryCards({ s, can, onExport }) {
     <div className="panel">
       <h3>📊 区间总览（{s.from} ~ {s.to}）
         <span className="tag" style={{ marginLeft: 10 }}>口径 v{s.caliber_version}</span>
+        {s.frozen && <span className="tag warn" style={{ marginLeft: 6 }}>结账冻结</span>}
         <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={onExport}>导出汇总 CSV</button>
       </h3>
       <div className="kpi-grid">
@@ -313,7 +347,7 @@ function SummaryCards({ s, can, onExport }) {
         <div className="kpi-grid" style={{ marginTop: 12 }}>
           <div className="kpi"><div className="kpi-label">新开卡金额</div><div className="kpi-value">{fmtMoney(s.card_sales_amount)}</div></div>
           <div className="kpi"><div className="kpi-label">续费金额</div><div className="kpi-value">{fmtMoney(s.renewal_amount)}</div></div>
-          <div className="kpi"><div className="kpi-label">退款金额</div><div className="kpi-value danger-text">{fmtMoney(Number(s.card_refund_amount) + Number(s.renewal_refund_amount))}</div></div>
+          <div className="kpi"><div className="kpi-label">退款金额</div><div className="kpi-value danger-text">{fmtMoney(Number(s.card_refund_amount || 0) + Number(s.renewal_refund_amount || 0))}</div></div>
           <div className="kpi"><div className="kpi-label">净收入（给投资人）</div><div className="kpi-value accent">{fmtMoney(s.net_revenue)}</div></div>
         </div>
       )}
@@ -357,7 +391,7 @@ function FlowTable({ title, rows, kind, phone }) {
   );
 }
 
-function DrillModal({ drill, onClose, canPhone, role }) {
+function DrillModal({ drill, onClose, canPhone }) {
   const [details, setDetails] = useState(null);
   const [roster, setRoster] = useState(null);
 
@@ -374,7 +408,7 @@ function DrillModal({ drill, onClose, canPhone, role }) {
   }
   function exportRoster(id) {
     downloadReport(`/reports/export/roster?class_id=${id}`)
-      .then(() => notify('名单已导出（按当前角色脱敏）', 'ok'))
+      .then(() => notify('名单已导出（按登录角色脱敏）', 'ok'))
       .catch((e) => notify(e.message, 'error'));
   }
 

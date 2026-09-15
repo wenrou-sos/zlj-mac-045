@@ -1,24 +1,43 @@
 // API 封装
 
-// 当前角色（前台 front_desk / 店长 manager / 投资人 investor），存在 localStorage
-export function getRole() {
-  return localStorage.getItem('gym_role') || 'manager';
+// 登录态：角色只能来自服务端会话，前端只保存不透明令牌；任何请求都无法自行声明角色
+const TOKEN_KEY = 'gym_token';
+const USER_KEY = 'gym_user';
+
+export function getToken() { return localStorage.getItem(TOKEN_KEY); }
+export function getUser() {
+  try { return JSON.parse(localStorage.getItem(USER_KEY) || 'null'); } catch { return null; }
 }
-export function setRole(role) {
-  localStorage.setItem('gym_role', role);
+export function setSession({ token, user }) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
-export const ROLE_LABEL = { front_desk: '前台', manager: '店长', investor: '投资人' };
+export function clearSession() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+// 401 全局回调（App 注册，触发跳转登录）
+let onUnauthorized = null;
+export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+
+export function getRole() { return getUser()?.role || null; }
+export function getRoleLabel() { return getUser()?.role_label || getUser()?.display_name || ''; }
 
 async function request(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     headers: {
       'Content-Type': 'application/json',
-      'X-User-Role': getRole(),
+      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
       ...(options.headers || {}),
     },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
+  if (res.status === 401) {
+    const data = await res.json().catch(() => ({}));
+    if (data?.login_required) { clearSession(); onUnauthorized?.(); }
+    throw new Error(data.error || '请先登录');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || `请求失败 (${res.status})`);
@@ -109,20 +128,25 @@ export function fmtMoney(x) {
   if (x === null || x === undefined) return '—';
   return `¥${Number(x).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
-// 带当前角色下载 CSV 导出
-export function downloadReport(path) {
-  return fetch(`/api${path}`, { headers: { 'X-User-Role': getRole() } })
-    .then(async (res) => {
-      if (!res.ok) {
-        const e = await res.json().catch(() => ({}));
-        throw new Error(e.error || `导出失败 (${res.status})`);
-      }
-      const blob = await res.blob();
-      const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
-      const filename = m ? decodeURIComponent(m[1]) : 'export.csv';
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename; a.click();
-      URL.revokeObjectURL(url);
-    });
+// 带登录令牌下载 CSV 导出（无令牌或权限不足由后端拒绝）
+export async function downloadReport(path) {
+  const res = await fetch(`/api${path}`, {
+    headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {},
+  });
+  if (res.status === 401) {
+    const e = await res.json().catch(() => ({}));
+    clearSession(); onUnauthorized?.();
+    throw new Error(e.error || '请先登录');
+  }
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({}));
+    throw new Error(e.error || `导出失败 (${res.status})`);
+  }
+  const blob = await res.blob();
+  const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
+  const filename = m ? decodeURIComponent(m[1]) : 'export.csv';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
 }

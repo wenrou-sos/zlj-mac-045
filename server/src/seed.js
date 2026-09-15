@@ -31,9 +31,9 @@ const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
-  // 1. 清空（口径版本表保留：口径只能追加，不能被 reseed 抹掉）
-  await query(`TRUNCATE report_exports, refunds, report_snapshots, daily_group_metrics,
-    daily_metrics, reminders, renewals, bookings, classes, coach_schedules,
+  // 1. 清空（口径版本表、员工账号不重置：口径与登录只能追加/管理）
+  await query(`TRUNCATE report_exports, login_sessions, refunds, report_snapshots, rollup_state,
+    daily_group_metrics, daily_metrics, reminders, renewals, bookings, classes, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练

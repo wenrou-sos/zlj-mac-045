@@ -78,16 +78,37 @@ export async function refreshMemberLifecycle() {
       AND m.last_active_at < CURRENT_DATE - $1 * INTERVAL '1 day'`, [CHURN_DAYS]);
 }
 
-export async function runMaintenance() {
-  await closePastClasses();
-  await refreshMemberLifecycle();
+// 巡检节流：结束的日子不可变，没必要每个请求都全表 UPDATE；
+// 进程内 60 秒最多跑一次，并发请求共用同一个在途 Promise。
+let lastMaintenanceAt = 0;
+let maintenanceInflight = null;
+const MAINTENANCE_TTL_MS = 60_000;
+
+export function runMaintenance(force = false) {
+  const now = Date.now();
+  const doRun = async () => {
+    await closePastClasses();
+    await refreshMemberLifecycle();
+    lastMaintenanceAt = Date.now();
+  };
+  if (force) return doRun();
+  if (maintenanceInflight) return maintenanceInflight;
+  if (now - lastMaintenanceAt < MAINTENANCE_TTL_MS) return Promise.resolve();
+  maintenanceInflight = doRun().finally(() => { maintenanceInflight = null; });
+  return maintenanceInflight;
 }
 
-// ---- 课程/预约维度的公共聚合（按课粒度，再上卷），range 均为闭区间日期 ----
+// 启动/对账用：强制立刻跑一次
+export async function runMaintenanceNow() {
+  await runMaintenance(true);
+}
+
+// ---- 课程/预约维度的公共聚合（按课粒度，再上卷）----
 // 有效预约：已核销 + 未到店（已结束课）+ 已预约（当天尚未结束的课，预约本身占座，
-// 结束后 booked 会被 closePastClasses 自动转成 no_show/checked，历史日因此不含 booked）
-// startPh/endPh 为日期下界/上界在整条参数化 SQL 中的占位符名（$1、$2 …）
-function classPerCTE(startPh = '$1', endPh = '$2') {
+// 结束后 booked 会被 closePastClasses 自动转成 no_show/checked，历史日因此不含 booked）。
+// dayExpr/paramPh：限定「开课日 ∈ 参数给出的日期集合」，物化时一次只算缺口日，不重扫全部历史。
+function classPerCTE(dayExpr = 'c.start_at::date', paramPh = '$1', isArray = false) {
+  const inFilter = isArray ? `${dayExpr} = ANY(${paramPh})` : `${dayExpr} >= ${paramPh} AND ${dayExpr} <= $2`;
   return `
     per_class AS (
       SELECT c.id, c.start_at::date AS day, c.status, c.title,
@@ -100,21 +121,39 @@ function classPerCTE(startPh = '$1', endPh = '$2') {
       FROM classes c
       LEFT JOIN bookings b ON b.class_id = c.id
       LEFT JOIN venues v ON v.id = c.venue_id
-      WHERE c.start_at::date >= ${startPh} AND c.start_at::date <= ${endPh}
+      WHERE ${inFilter}
       GROUP BY c.id, v.name
     )`;
 }
 
-// 增量刷新日级汇总（只刷已结束日期），周/月查询只扫汇总表，不随数据量线性变慢
+async function getMaterializedDays() {
+  const r = await query(`SELECT day::text AS day FROM rollup_state`);
+  return new Set(r.rows.map((x) => x.day));
+}
+
+// 增量刷新日级汇总：只计算「缺口日 + 昨天」（昨天重算以接纳当日补录的核销/退款），
+// 更早的日期已结账不可变，永不重算 → 历史周/月查询成本与总数据量无关。
+// 返回本次实际计算的日期数。
 export async function refreshDailyRollups(from, to) {
-  if (!from || !to || from > to) return;
+  if (!from || !to || from > to) return 0;
   const today = await currentDate();
   const histLast = addDaysISO(today, -1);
-  if (from > histLast) return; // 区间全部落在今天/未来，没有可结账的日期
+  if (from > histLast) return 0; // 区间全部落在今天/未来
   const rangeEnd = to < histLast ? to : histLast;
 
+  const materialized = await getMaterializedDays();
+  const yesterday = histLast;
+  const missing = [];
+  for (let d = from; d <= rangeEnd; d = addDaysISO(d, 1)) {
+    if (d !== yesterday && materialized.has(d)) continue; // 已物化且非昨天：直接跳过
+    missing.push(d);
+  }
+  if (missing.length === 0) return 0;
+
+  // 整段 SQL 只传一个日期数组参数 $1（date[]），占位符统一为 $1
+  const ARRAY_PH = '$1::date[]';
   await query(`
-    WITH ${classPerCTE()},
+    WITH ${classPerCTE(undefined, ARRAY_PH, true)},
     cls AS (
       SELECT day,
         count(*) FILTER (WHERE status <> 'canceled') AS classes_scheduled,
@@ -129,13 +168,11 @@ export async function refreshDailyRollups(from, to) {
     ),
     sales AS (
       SELECT created_at::date AS day, count(*) AS n, COALESCE(sum(price),0) AS amt
-      FROM membership_cards
-      WHERE created_at::date >= $1 AND created_at::date <= $2 GROUP BY 1
+      FROM membership_cards WHERE created_at::date = ANY(${ARRAY_PH}) GROUP BY 1
     ),
     ren AS (
       SELECT renewed_at::date AS day, count(*) AS n, COALESCE(sum(amount),0) AS amt
-      FROM renewals
-      WHERE renewed_at::date >= $1 AND renewed_at::date <= $2 GROUP BY 1
+      FROM renewals WHERE renewed_at::date = ANY(${ARRAY_PH}) GROUP BY 1
     ),
     ref AS (
       SELECT refunded_at::date AS day,
@@ -143,13 +180,12 @@ export async function refreshDailyRollups(from, to) {
         COALESCE(sum(amount) FILTER (WHERE source_type='card'),0)    AS ca,
         count(*) FILTER (WHERE source_type='renewal') AS rn,
         COALESCE(sum(amount) FILTER (WHERE source_type='renewal'),0) AS ra
-      FROM refunds
-      WHERE refunded_at::date >= $1 AND refunded_at::date <= $2 GROUP BY 1
+      FROM refunds WHERE refunded_at::date = ANY(${ARRAY_PH}) GROUP BY 1
     ),
     nm AS (SELECT joined_at AS day, count(*) n FROM members
-      WHERE joined_at >= $1 AND joined_at <= $2 GROUP BY 1),
+      WHERE joined_at = ANY(${ARRAY_PH}) GROUP BY 1),
     lm AS (SELECT lost_at AS day, count(*) n FROM members
-      WHERE lost_at >= $1 AND lost_at <= $2 GROUP BY 1)
+      WHERE lost_at = ANY(${ARRAY_PH}) GROUP BY 1)
     INSERT INTO daily_metrics AS d (
       day, classes_scheduled, classes_canceled, seats_total, seats_effective,
       checkins, no_shows, canceled_bookings, full_classes,
@@ -164,7 +200,7 @@ export async function refreshDailyRollups(from, to) {
       COALESCE(nm.n,0), COALESCE(lm.n,0),
       COALESCE(sales.n,0), COALESCE(sales.amt,0), COALESCE(ref.cn,0), COALESCE(ref.ca,0),
       COALESCE(ren.n,0), COALESCE(ren.amt,0), COALESCE(ref.rn,0), COALESCE(ref.ra,0)
-    FROM generate_series($1::date, $3::date, INTERVAL '1 day') g(day)
+    FROM unnest(${ARRAY_PH}) AS g(day)
     LEFT JOIN cls ON cls.day = g.day
     LEFT JOIN sales ON sales.day = g.day
     LEFT JOIN ren ON ren.day = g.day
@@ -182,20 +218,20 @@ export async function refreshDailyRollups(from, to) {
       renewal_count=EXCLUDED.renewal_count, renewal_amount=EXCLUDED.renewal_amount,
       renewal_refund_count=EXCLUDED.renewal_refund_count,
       renewal_refund_amount=EXCLUDED.renewal_refund_amount`,
-    [from, to, rangeEnd]);
+    [missing]);
 
-  // 日 × 课程 / 日 × 场地（同一条课粒度 CTE 上卷两遍）。
-  // 每天每个出现过的分组 upsert 一行；分组若当天彻底消失（如整段无课），残留旧行需清除。
+  // 日 × 课程 / 日 × 场地（只针对本次缺口日，先删后插，保证取消/改名不留残行）
   for (const [dim, keyExpr, nameExpr] of [
     ['course', 'p.title', 'p.title'],
     ['venue', `'venue:'||COALESCE(p.venue_id,0)`, 'p.venue_name'],
   ]) {
+    await query(`DELETE FROM daily_group_metrics WHERE day = ANY($1::date[]) AND dim=$2`, [missing, dim]);
     await query(`
-      WITH ${classPerCTE('$1', '$2')}
+      WITH ${classPerCTE(undefined, '$1::date[]', true)}
       INSERT INTO daily_group_metrics
         (day, dim, dim_key, dim_name, classes_scheduled, classes_canceled,
          seats_total, seats_effective, checkins, no_shows, canceled_bookings, full_classes)
-      SELECT p.day, '${dim}'::varchar, ${keyExpr}, ${nameExpr},
+      SELECT p.day, $2::varchar, ${keyExpr}, ${nameExpr},
         count(*) FILTER (WHERE p.status <> 'canceled'),
         count(*) FILTER (WHERE p.status = 'canceled'),
         COALESCE(sum(p.capacity) FILTER (WHERE p.status <> 'canceled'), 0),
@@ -203,31 +239,15 @@ export async function refreshDailyRollups(from, to) {
         COALESCE(sum(p.ns), 0), COALESCE(sum(p.cb), 0),
         count(*) FILTER (WHERE p.status <> 'canceled' AND p.eff >= p.capacity)
       FROM per_class p
-      WHERE p.day < CURRENT_DATE
-      GROUP BY p.day, ${keyExpr}, ${nameExpr}
-      ON CONFLICT (day, dim, dim_key) DO UPDATE SET
-        dim_name=EXCLUDED.dim_name,
-        classes_scheduled=EXCLUDED.classes_scheduled, classes_canceled=EXCLUDED.classes_canceled,
-        seats_total=EXCLUDED.seats_total, seats_effective=EXCLUDED.seats_effective,
-        checkins=EXCLUDED.checkins, no_shows=EXCLUDED.no_shows,
-        canceled_bookings=EXCLUDED.canceled_bookings, full_classes=EXCLUDED.full_classes`,
-      [from, to]);
+      GROUP BY p.day, ${keyExpr}, ${nameExpr}`,
+      [missing, dim]);
   }
 
-  // 清理：区间内某天某分组已经没有任何课（重排/取消导致），删掉残留行，避免汇总虚高
+  // 这些日期从此结账（昨天每次重算都会刷新 computed_at）
   await query(`
-    DELETE FROM daily_group_metrics g
-    WHERE g.day BETWEEN $1 AND LEAST($2, CURRENT_DATE - 1)
-      AND g.dim IN ('course','venue')
-      AND NOT EXISTS (
-        SELECT 1 FROM classes c
-        LEFT JOIN venues v ON v.id = c.venue_id
-        WHERE c.start_at::date = g.day
-          AND (
-            (g.dim='course' AND c.title = g.dim_key)
-            OR (g.dim='venue' AND g.dim_key = 'venue:'||COALESCE(c.venue_id,0))
-          ))`,
-    [from, to]);
+    INSERT INTO rollup_state(day) SELECT unnest($1::date[])
+    ON CONFLICT (day) DO UPDATE SET computed_at=now()`, [missing]);
+  return missing.length;
 }
 
 // 汇总行求和的统一字段
@@ -311,7 +331,8 @@ export function applyRates(t) {
   return t;
 }
 
-// 区间经营总览：已结束日走汇总表（先增量补齐），今天实时算，未来日不参与
+// 区间经营总览：已结束日走汇总表（只物化缺口日），今天实时算，未来日不参与。
+// 返回 computed_days：本次实际新算/重算的历史日数（用于回归「历史查询不重复全量计算」）。
 export async function getSummary(from, to) {
   await runMaintenance();
   const today = await currentDate();
@@ -319,8 +340,9 @@ export async function getSummary(from, to) {
   const histTo = to < histEnd ? to : histEnd;
 
   const totals = EMPTY_TOTALS();
+  let computedDays = 0;
   if (from <= histTo) {
-    await refreshDailyRollups(from, histTo);
+    computedDays = await refreshDailyRollups(from, histTo);
     const r = await query(
       `SELECT ${SUM_FIELDS.map((f) => `COALESCE(sum(${f}),0) AS ${f}`).join(',')}
        FROM daily_metrics WHERE day BETWEEN $1 AND $2`,
@@ -332,6 +354,7 @@ export async function getSummary(from, to) {
   }
   applyRates(totals);
   totals.from = from; totals.to = to;
+  totals.computed_days = computedDays;
   return totals;
 }
 
@@ -511,21 +534,55 @@ function isoWeekStart(d) {
   return dt.toISOString().slice(0, 10);
 }
 
+// 周/月的标准闭区间 [start, end]
+export function periodBounds(periodType, anyDate) {
+  const start = periodType === 'week' ? isoWeekStart(anyDate) : anyDate.slice(0, 8) + '01';
+  const end = periodType === 'week'
+    ? addDaysISO(start, 6)
+    : addDaysISO(addDaysISO(start.slice(0, 8) + '01', 31).slice(0, 8) + '01', -1);
+  return { start, end };
+}
+
+// 判断查询区间 [from,to] 是否恰好等于某个已冻结的周/月；命中返回快照元信息
+// （页面重查/导出整月时必须走快照，而不是实时重算）
+export async function findFrozenPeriod(from, to) {
+  const candidates = [
+    { type: 'month', key: 'month' },
+    { type: 'week', key: 'week' },
+  ];
+  for (const { type } of candidates) {
+    const { start, end } = periodBounds(type, from);
+    if (start === from && end === to) {
+      const r = await query(`
+        SELECT period_type, period_start::text AS period_start, caliber_version, generated_at::text AS generated_at
+        FROM report_snapshots
+        WHERE period_type=$1 AND period_start=$2 AND report_key='summary'
+        ORDER BY caliber_version DESC LIMIT 1`, [type, start]);
+      if (r.rows[0]) {
+        return { period_type: type, period_start: start, period_end: end,
+          caliber_version: r.rows[0].caliber_version, generated_at: r.rows[0].generated_at };
+      }
+    }
+  }
+  return null;
+}
+
 // 冻结一个已结束 ≥3 天的周/月（幂等）。返回是否实际生成。
 export async function freezePeriod(periodType, periodStart) {
-  await runMaintenance();
   const start = periodType === 'week' ? isoWeekStart(periodStart) : periodStart.slice(0, 8) + '01';
   const end = periodType === 'week'
     ? addDaysISO(start, 6)
     : addDaysISO(addDaysISO(start.slice(0, 8) + '01', 31).slice(0, 8) + '01', -1);
-  const today = (await query(`SELECT CURRENT_DATE::text d`)).rows[0].d;
+  const today = await currentDate();
   if (addDaysISO(end, 3) > today) return false; // 结账缓冲期未满，不冻结
 
+  // 先查快照存在性（便宜），命中直接返回，不为已冻结期间重复全量计算
   const exists = await query(
     `SELECT 1 FROM report_snapshots WHERE period_type=$1 AND period_start=$2 AND caliber_version=$3`,
     [periodType, start, CALIBER_VERSION]);
   if (exists.rows.length) return false;
 
+  await runMaintenance(true);
   const [summary, attendance, members, cardSales] = await Promise.all([
     getSummary(start, end),
     (async () => ({
@@ -562,17 +619,32 @@ export async function freezePeriod(periodType, periodStart) {
   return true;
 }
 
-// 启动时补冻结：扫描历史周/月（近 24 个月、有开课记录的），缺快照的冻结
+// 启动时补冻结：只处理「有开课但缺当前口径快照」的历史月（便宜的反连接，不重算已有月份）
 export async function freezeDuePeriods() {
   const months = (await query(`
-    SELECT DISTINCT date_trunc('month', start_at)::date::text AS m
-    FROM classes
-    WHERE start_at >= date_trunc('month', CURRENT_DATE) - INTERVAL '24 months'
-    ORDER BY m`)).rows;
+    SELECT DISTINCT date_trunc('month', c.start_at)::date::text AS m
+    FROM classes c
+    WHERE c.start_at >= date_trunc('month', CURRENT_DATE) - INTERVAL '24 months'
+      AND c.start_at::date < CURRENT_DATE - INTERVAL '3 days'
+      AND NOT EXISTS (
+        SELECT 1 FROM report_snapshots s
+        WHERE s.period_type='month'
+          AND s.period_start = date_trunc('month', c.start_at)::date
+          AND s.report_key='summary' AND s.caliber_version=$1)
+    ORDER BY m`, [CALIBER_VERSION])).rows;
   for (const { m } of months) {
     const ms = String(m).slice(0, 10);
     try { await freezePeriod('month', ms); } catch (e) { console.error('月快照失败', ms, e.message); }
   }
+}
+
+// 启动时一次性回填日汇总缺口（后台非阻塞），后续历史查询即纯读汇总
+export async function backfillRollups() {
+  const edge = (await query(`
+    SELECT min(start_at)::date::text AS mn,
+           (CURRENT_DATE - 1)::text AS mx FROM classes`)).rows[0];
+  if (!edge.mn) return;
+  await refreshDailyRollups(edge.mn, edge.mx);
 }
 
 // 工作台近 7 天趋势：历史日取日汇总，今天实时算（与报表同一数据通路）

@@ -73,7 +73,22 @@ npm run seed         # 随时重置样例数据
   | 周/月结账冻结 | ❌ | ✅ | ❌ |
   | 课节预约名单导出 | ✅（**不含手机号**） | ✅（含手机号） | — |
 
-  每次导出写入 `report_exports` 审计（角色、报表、区间、行数、被屏蔽字段）。
+  每次导出写入 `report_exports` 审计（登录账号、角色、报表、区间、行数、被屏蔽字段）。
+
+- **登录与鉴权（角色不可伪造）**：报表接口必须先 `POST /api/auth/login` 拿不透明令牌，之后请求带
+  `Authorization: Bearer <token>`；角色**只从服务端会话实时读取**，令牌本身不含角色。
+  任何客户端发送的 `X-User-Role` 头一律返回 **403**，无令牌返回 **401**（前端自动跳登录页）。
+  演示账号（密码 scrypt 加盐存储）：
+
+  | 账号 | 密码 | 角色 |
+  | --- | --- | --- |
+  | `manager` | `manager123` | 店长（全部数据 / 退款 / 结账冻结） |
+  | `front` | `front123` | 前台（名单无手机号、无金额） |
+  | `investor` | `investor123` | 投资人（经营/财务汇总，无会员明细） |
+
+- **冻结期间强制读快照**：当查询/导出区间恰好等于某个已结账的周/月，接口自动改读
+  `report_snapshots`（响应 `frozen:true`，导出文件名与首行标注「结账冻结快照 vN」），
+  即使底层历史数据之后被改动，重查与导出仍是结账当时的数字；区间不等于整周/月时仍为实时数据。
 
 ## 样例数据
 
@@ -85,31 +100,36 @@ npm run seed         # 随时重置样例数据
 ```bash
 # 先启动后端，再执行：
 node server/e2e-test.mjs          # 或 npm run test:e2e（业务流，不污染数据）
-node server/report-test.mjs       # 或 npm run test:reports（33 项报表对账/角色/冻结，结束自动 reseed）
+node server/report-test.mjs       # 或 npm run test:reports（28 项：鉴权防伪造/冻结读快照/不重复全量/对账，结束自动 reseed）
 ```
 
 ## 性能与历史口径
 
-- 已结束日期增量写入 `daily_metrics` / `daily_group_metrics` 日级汇总表（按日、日×课程、日×场地），
-  按周/月查询只对汇总行求和，**耗时与区间长度、底层预约量无关**；当天数据实时聚合后与历史汇总拼接。
+- 已结束日期增量写入 `daily_metrics` / `daily_group_metrics` 日级汇总表，并在 `rollup_state`
+  记录每个日期是否已物化：**每个历史日只计算一次**（昨天每天重算 1 次以接纳当日补录），
+  重复的周/月查询重算天数为 0、直接对汇总行求和，耗时与区间长度、底层预约量无关。
+  当天数据实时聚合后与历史汇总拼接；启动时后台一次性回填缺口（不阻塞启动）。
+- 巡检（结课转 `finished`/未到店、会员流失判定）进程内 60 秒节流并合并并发，不再每个请求全表 UPDATE。
 - 历史周/月在结束满 3 天后自动（或店长手动）结账，结果连同**口径版本号**冻结进 `report_snapshots`；
-  下个月甚至明年再打开，看到的仍是结账当时的数字。口径只追加版本、不覆盖历史。
+  下个月甚至明年再打开（查询或导出），看到的仍是结账当时的数字。口径只追加版本、不覆盖历史。
 
 ## API 一览
 
 ```
+POST /api/auth/login | /api/auth/logout   登录（返回 Bearer 令牌）/ 登出
 GET  /api/dashboard/stats | /trend        工作台统计与趋势（与报表同口径）
-GET  /api/reports/summary                 区间总览（上座率/满员率/会员/净收入）
+GET  /api/reports/frozen-periods          已冻结周/月列表（需登录）
+GET  /api/reports/summary                 区间总览（整周/月命中冻结则读快照）
 GET  /api/reports/attendance?dim=course|venue         按课程/场地分组
 GET  /api/reports/attendance/details                  分组下钻到课节
 GET  /api/reports/classes/:id/roster                  单课预约名单（手机号按角色下发）
-GET  /api/reports/members?kind=new|lost               新增/流失会员
+GET  /api/reports/members?kind=new|lost               新增/流失会员（投资人 403）
 GET  /api/reports/card-sales                          卡种销量与续费金额
 GET/POST /api/reports/refunds                         退款流水/登记（仅店长）
-GET  /api/reports/caliber                             口径版本
+GET  /api/reports/caliber                             口径版本（公开）
 POST /api/reports/freeze                              周/月结账冻结（仅店长）
-GET  /api/reports/frozen/:type/:key                   读冻结快照
-GET  /api/reports/export/:report                      CSV 导出（按角色脱敏，写审计）
+GET  /api/reports/frozen/:type/:key                   直接读冻结快照
+GET  /api/reports/export/:report                      CSV 导出（整周/月读快照，按角色脱敏，写审计）
 GET/POST /api/members      GET/PUT /api/members/:id
 GET/POST /api/cards        POST /api/cards/:id/renew | /freeze
                            GET  /api/cards/renewals/list

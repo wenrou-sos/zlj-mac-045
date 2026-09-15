@@ -17,7 +17,9 @@ import bookingsRouter from './routes/bookings.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
 import reportsRouter from './routes/reports.js';
-import { ensureCaliber, freezeDuePeriods } from './metrics.js';
+import authRouter from './routes/auth.js';
+import { attachUser, ensureStaffUsers } from './auth.js';
+import { ensureCaliber, freezeDuePeriods, backfillRollups } from './metrics.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -25,6 +27,9 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/api/health', (req, res) => res.json({ ok: true, db: DB_MODE }));
+
+// 登录/登出（公开）
+app.use('/api/auth', authRouter);
 
 app.use('/api/dashboard', dashboardRouter);
 app.use('/api/members', membersRouter);
@@ -36,7 +41,9 @@ app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
-app.use('/api/reports', reportsRouter);
+
+// 经营报表：先解析登录会话；角色只能来自会话，伪造 X-User-Role 直接 403
+app.use('/api/reports', attachUser, reportsRouter);
 
 // 重置样例数据
 app.post('/api/dev/reseed', async (req, res, next) => {
@@ -48,7 +55,7 @@ app.post('/api/dev/reseed', async (req, res, next) => {
 
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: err.message || '服务器内部错误' });
+  res.status(err.status || 500).json({ error: err.message || '服务器内部错误' });
 });
 
 async function init() {
@@ -57,6 +64,7 @@ async function init() {
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await execSql(schema);
   await ensureCaliber();
+  await ensureStaffUsers();
 
   // 首次启动（无数据）自动写入样例数据
   const n = (await query(`SELECT count(*)::int AS n FROM members`)).rows[0].n;
@@ -70,8 +78,11 @@ async function init() {
     console.log(`健身场馆管理系统 API: http://localhost:${port}/api/health  (数据库: ${DB_MODE})`);
   });
 
-  // 历史已结束月份补冻结（不阻塞启动，幂等）；保证下个月再打开仍是当时口径
-  freezeDuePeriods().catch((e) => console.error('历史快照冻结失败：', e.message));
+  // 历史已结束月份补冻结（不阻塞启动，幂等）；保证下个月再打开仍是当时口径。
+  // 先一次性回填日汇总缺口（只算缺失日），后续历史查询即纯读汇总、不再全量计算。
+  backfillRollups()
+    .then(() => freezeDuePeriods())
+    .catch((e) => console.error('历史报表初始化失败：', e.message));
 }
 
 process.on('SIGINT', async () => { await closeDb(); process.exit(0); });

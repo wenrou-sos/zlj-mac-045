@@ -46,7 +46,8 @@ router.get('/adjustments/list', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// 新建调整记录：对锁定账期的更正，金额正=补发 / 负=扣减，生成下期结算单时自动并入
+// 新建调整记录：对锁定账期的更正，金额正=补发 / 负=扣减
+// source_period 记录被更正的账期：它只会被更晚账期的结算单吸收（冲抵到下一期），不会被补出的历史账期吞掉
 router.post('/adjustments', async (req, res, next) => {
   try {
     const { coach_id, reason } = req.body;
@@ -55,17 +56,23 @@ router.post('/adjustments', async (req, res, next) => {
     if (!coach_id) return res.status(400).json({ error: '请选择教练' });
     if (!amount) return res.status(400).json({ error: '调整金额不能为 0' });
     if (!reason || !reason.trim()) return res.status(400).json({ error: '请填写调整原因' });
+    let sourcePeriod = null;
     if (classId) {
       const cls = await query(`SELECT locked_period FROM classes WHERE id=$1`, [classId]);
       if (cls.rows.length === 0) return res.status(404).json({ error: '关联课程不存在' });
       if (!cls.rows[0].locked_period) {
         return res.status(409).json({ error: '该课程尚未结算锁定，可直接改派/取消，无需调整记录' });
       }
+      sourcePeriod = cls.rows[0].locked_period;
+    } else {
+      // 不关联课程：归属当前最新已出账期（即冲抵到下一期）；还没有任何账单则可被首期吸收
+      const latest = await query(`SELECT max(period) AS p FROM settlement_batches`);
+      sourcePeriod = latest.rows[0].p || null;
     }
     const r = await query(
-      `INSERT INTO settlement_adjustments(coach_id, class_id, amount, reason)
-       VALUES($1,$2,$3,$4) RETURNING *`,
-      [coach_id, classId, amount, reason.trim()]
+      `INSERT INTO settlement_adjustments(coach_id, class_id, amount, reason, source_period)
+       VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [coach_id, classId, amount, reason.trim(), sourcePeriod]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) { next(e); }
@@ -115,7 +122,7 @@ router.get('/:period', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// 生成某月结算单：把该月（含历史漏网）未结算的课程一次性入账并锁定
+// 生成某月结算单：只把本账期内的课程入账并锁定（早期月份漏出的课请补出对应月份的账单）
 router.post('/', async (req, res, next) => {
   try {
     const { period, operator } = req.body;
@@ -139,15 +146,16 @@ router.post('/', async (req, res, next) => {
         [period, startDate, endDate, operator || '前台']
       )).rows[0];
 
-      // 结算范围：所有未锁定且开始时间早于本期结束的课（兜住历史漏网课程，保证每节课恰好入账一次）
+      // 结算范围：仅限本账期 [start_date, end_date) 内未锁定的课
+      // （不吞其他月份的课——历史月份漏结算的，补出对应月份的账单即可，各期互不串账）
       const classes = (await tx.query(`
         SELECT cl.id, cl.title, cl.coach_id, cl.original_coach_id, cl.start_at, cl.end_at, cl.status,
           co.hourly_rate,
           (SELECT count(*) FROM bookings b WHERE b.class_id=cl.id AND b.status='checked') AS checked_count
         FROM classes cl
         LEFT JOIN coaches co ON co.id = cl.coach_id
-        WHERE cl.locked_period IS NULL AND cl.start_at < $1
-        ORDER BY cl.start_at`, [endDate])).rows;
+        WHERE cl.locked_period IS NULL AND cl.start_at >= $1 AND cl.start_at < $2
+        ORDER BY cl.start_at`, [startDate, endDate])).rows;
 
       const leaves = (await tx.query(
         `SELECT coach_id, start_at, end_at FROM coach_leaves WHERE status='active'`)).rows;
@@ -172,15 +180,18 @@ router.post('/', async (req, res, next) => {
         );
         total += amount;
       }
-      // 锁定本期课程
+      // 锁定本期课程（仅本账期，不影响其他月份）
       await tx.query(
-        `UPDATE classes SET locked_period=$1 WHERE locked_period IS NULL AND start_at < $2`,
-        [period, endDate]
+        `UPDATE classes SET locked_period=$1 WHERE locked_period IS NULL AND start_at >= $2 AND start_at < $3`,
+        [period, startDate, endDate]
       );
 
-      // 把待冲抵的调整记录并入本期
+      // 并入待冲抵调整：只吸收「被更正账期早于本账期」的记录
+      // （8 月的扣款只能进 9 月及以后的账单，不会被补出的 6/7 月账单吞掉）
       const adjustments = (await tx.query(
-        `SELECT * FROM settlement_adjustments WHERE status='pending' ORDER BY id`)).rows;
+        `SELECT * FROM settlement_adjustments
+         WHERE status='pending' AND (source_period IS NULL OR source_period < $1)
+         ORDER BY id`, [period])).rows;
       for (const adj of adjustments) {
         await tx.query(
           `INSERT INTO settlement_items(batch_id, coach_id, class_id, category, hours, amount, note)

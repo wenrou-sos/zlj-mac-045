@@ -180,6 +180,13 @@ check('销假成功', r.status === 200, JSON.stringify(r.data));
 r = await api(`/leaves/${leave4}/cancel`, { method: 'POST' });
 check('重复销假被拦截 (409)', r.status === 409, JSON.stringify(r.data));
 
+// 17.5 造一节上上月（PERIOD2）的课：验证账期互不串扰（上月账单不能吞它）
+const prev2D = new Date(); prev2D.setDate(1); prev2D.setMonth(prev2D.getMonth() - 2);
+const PERIOD2 = `${prev2D.getFullYear()}-${String(prev2D.getMonth() + 1).padStart(2, '0')}`;
+let rr = await api('/classes', { method: 'POST', body: { title: '上上月漏网课', coach_id: 1, venue_id: 3, start_at: `${PERIOD2}-10T10:00:00+08:00`, end_at: `${PERIOD2}-10T11:00:00+08:00`, capacity: 10 } });
+const strayClass = rr.data.id;
+check('构造上上月课程成功', !!strayClass, JSON.stringify(rr.data));
+
 // 18. 生成上月结算单：分类齐全、请假时段课程不计费
 r = await api('/settlements', { method: 'POST', body: { period: PERIOD } });
 check(`生成 ${PERIOD} 结算单`, r.status === 201 && r.data.batch.class_count > 0, JSON.stringify(r.data));
@@ -191,9 +198,16 @@ check('分类含正常/代课/取消/未到店/请假不计费',
 const wl = r.data.summary.find((s) => s.coach_name === '王磊');
 check('王磊请假时段课程不计入收入', wl.leave_excluded.count >= 1, JSON.stringify(wl));
 
+// 18.5 串期防护①：上月账单不含上上月课程，且该课未被锁定
+check('上月账单未吞入上上月课程', !r.data.items.some((i) => i.class_id === strayClass),
+  `课程#${strayClass} 出现在 ${PERIOD} 账单`);
+const strayNow = (await api(`/classes?from=${PERIOD2}-01T00:00:00%2B08:00&to=${PERIOD2}-28T23:59:00%2B08:00`)).data
+  .find((c) => c.id === strayClass);
+check('上上月课程未被上月账单锁定', strayNow && !strayNow.locked_period, JSON.stringify(strayNow));
+
 // 19. 结算锁定：取消/改派/补排课均被拦截
 const lockedClass = r.data.items.find((i) => i.class_id && i.category === 'normal');
-let rr = await api(`/classes/${lockedClass.class_id}/cancel`, { method: 'POST', body: {} });
+rr = await api(`/classes/${lockedClass.class_id}/cancel`, { method: 'POST', body: {} });
 check('锁定课程取消被拦截 (409)', rr.status === 409, JSON.stringify(rr.data));
 rr = await api(`/classes/${lockedClass.class_id}/reassign`, { method: 'POST', body: { to_coach_id: 2 } });
 check('锁定课程改派被拦截 (409)', rr.status === 409, JSON.stringify(rr.data));
@@ -211,6 +225,18 @@ rr = await api('/settlements', { method: 'POST', body: { period: PERIOD } });
 check('重复出单被拦截 (409)', rr.status === 409, JSON.stringify(rr.data));
 rr = await api('/settlements', { method: 'POST', body: { period: thisPeriod } });
 check('未结束月份被拦截 (400)', rr.status === 400, JSON.stringify(rr.data));
+
+// 22. 串期防护②：补出上上月账单——吸收上上月课程，但不吸收归属上月的调整
+rr = await api('/settlements', { method: 'POST', body: { period: PERIOD2 } });
+check(`补出 ${PERIOD2} 结算单`, rr.status === 201, JSON.stringify(rr.data));
+check('上上月账单未吸收上月调整', rr.data.adjustments_applied === 0, JSON.stringify(rr.data));
+rr = await api(`/settlements/${PERIOD2}`);
+check('上上月账单包含漏网课程', rr.data.items.some((i) => i.class_id === strayClass),
+  `课程#${strayClass} 不在 ${PERIOD2} 账单`);
+rr = await api('/settlements/adjustments/list');
+const adj = rr.data.find((a) => Number(a.amount) === -150);
+check('上月调整仍待冲抵且归属上月账期',
+  !!adj && adj.status === 'pending' && adj.source_period === PERIOD, JSON.stringify(adj));
 
 console.log(`\n结果：${pass} 通过，${fail} 失败`);
 process.exit(fail ? 1 : 0);

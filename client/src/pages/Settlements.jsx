@@ -171,12 +171,13 @@ export default function Settlements() {
         <h3>🧮 调整记录（结算锁定后的更正，冲抵到下期）</h3>
         <div className="table-wrap">
           <table>
-            <thead><tr><th>时间</th><th>教练</th><th>关联课程</th><th>金额</th><th>原因</th><th>状态</th></tr></thead>
+            <thead><tr><th>时间</th><th>教练</th><th>更正账期</th><th>关联课程</th><th>金额</th><th>原因</th><th>状态</th></tr></thead>
             <tbody>
               {adjustments.map((a) => (
                 <tr key={a.id}>
                   <td className="muted nowrap">{fmtDateTime(a.created_at)}</td>
                   <td><b>{a.coach_name}</b></td>
+                  <td>{a.source_period ? <span className="badge muted">{a.source_period}</span> : <span className="muted">—</span>}</td>
                   <td className="muted">{a.class_title ? `${a.class_title}（${fmtDateTime(a.class_start_at)}）` : '—'}</td>
                   <td style={{ color: Number(a.amount) < 0 ? 'var(--danger)' : 'var(--ok)' }} className="nowrap">
                     {Number(a.amount) > 0 ? '+' : ''}{fmtMoney(a.amount)}
@@ -187,7 +188,7 @@ export default function Settlements() {
                     : <span className="badge ok">已并入 {a.applied_period} 期</span>}</td>
                 </tr>
               ))}
-              {adjustments.length === 0 && <tr><td colSpan={6} className="empty">暂无调整记录</td></tr>}
+              {adjustments.length === 0 && <tr><td colSpan={7} className="empty">暂无调整记录</td></tr>}
             </tbody>
           </table>
         </div>

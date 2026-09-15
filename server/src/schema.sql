@@ -180,10 +180,14 @@ CREATE TABLE IF NOT EXISTS settlement_adjustments (
   class_id      INTEGER REFERENCES classes(id) ON DELETE SET NULL,
   amount        NUMERIC(10,2) NOT NULL,       -- 正=补发 负=扣减
   reason        VARCHAR(255) NOT NULL,
+  source_period VARCHAR(7),                   -- 被更正的账期（关联课程的锁定账期；无课程则为当前最新账期）
   status        VARCHAR(10) DEFAULT 'pending',-- pending / applied（已并入某期结算）
   applied_period VARCHAR(7),
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- 老库升级（幂等）
+ALTER TABLE settlement_adjustments ADD COLUMN IF NOT EXISTS source_period VARCHAR(7);
 
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);

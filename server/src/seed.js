@@ -24,6 +24,13 @@ function classTs(dayOffset, hh, mm = 0) {
   const offset = APP_TZ === 'Asia/Shanghai' ? '+08:00' : 'Z';
   return `${day}T${H}:${M}:00${offset}`;
 }
+// 按绝对日期（YYYY-MM-DD）生成墙上时钟时间
+function classTsOn(ymd, hh, mm = 0) {
+  const H = String(hh).padStart(2, '0');
+  const M = String(mm).padStart(2, '0');
+  const offset = APP_TZ === 'Asia/Shanghai' ? '+08:00' : 'Z';
+  return `${ymd}T${H}:${M}:00${offset}`;
+}
 function weekdayOf(dayOffset) {
   return new Date(`${dateStr(dayOffset)}T00:00:00+08:00`).getUTCDay();
 }
@@ -135,13 +142,13 @@ export async function seedData() {
     );
   }
 
-  // 7. 教练排班：上月（供结算演示）~ 未来 14 天
+  // 7. 教练排班：上上月起（覆盖结算演示所需的全部历史课程）~ 未来 14 天
   const shifts = [
     ['09:00', '17:00', 'normal'],
     ['13:00', '21:00', 'evening'],
     ['07:00', '12:00', 'morning'],
   ];
-  for (let d = -45; d <= 14; d++) {
+  for (let d = -62; d <= 14; d++) {
     for (let coachId = 1; coachId <= 6; coachId++) {
       // 教练每周休息一天（id 偏移）
       if (weekdayOf(d) === (coachId % 7)) continue;
@@ -180,17 +187,22 @@ export async function seedData() {
   const futureClasses = classIds.slice(-10);
   await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(futureClasses)]);
 
-  // 8.5 上月课程：-45 ~ -32 天，每天 2~3 节（均已结束，用于课时结算演示）
+  // 8.5 上月课程：上一自然月每天 1~2 节（均已结束，用于课时结算演示；锚定自然月保证上月账单永远有课可结）
+  const [curY, curM] = todayInTz().split('-').map(Number);
+  const prevM = curM === 1 ? 12 : curM - 1;
+  const prevY = curM === 1 ? curY - 1 : curY;
+  const daysInPrevM = new Date(Date.UTC(prevY, prevM, 0)).getUTCDate();
+  const prevMonthDay = (day) => `${prevY}-${String(prevM).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   const lastMonthIds = [];
-  for (let d = -45; d <= -32; d++) {
-    const count = randInt(2, 3);
+  for (let day = 1; day <= daysInPrevM; day++) {
+    const count = randInt(1, 2);
     const chosenHours = [...hours].sort(() => Math.random() - 0.5).slice(0, count).sort((a, b) => a - b);
     for (const h of chosenHours) {
       const [title, coachId, venueId, cap, cost] = pick(classTemplates);
       const r = await query(
         `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
          VALUES($1,$2,$3,$4,$5,$6,$7,'finished') RETURNING id`,
-        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, cost]
+        [title, coachId, venueId, classTsOn(prevMonthDay(day), h), classTsOn(prevMonthDay(day), h + 1), cap, cost]
       );
       classIds.push(r.rows[0].id);
       lastMonthIds.push(r.rows[0].id);
@@ -198,18 +210,18 @@ export async function seedData() {
   }
   // 上月随机取消一节（结算单里"取消"类别的样例）
   await query(`UPDATE classes SET status='canceled' WHERE id = $1`, [pick(lastMonthIds)]);
-  // 保证王磊(id=1)在 -40~-38 请假窗口内每天有 1 节课（12 点不与现有排课冲突；
+  // 保证王磊(id=1)在上月 6~8 号请假窗口内每天有 1 节课（12 点不与现有排课冲突；
   // 结算演示：最早一节留作"请假不计费"，其余改派出去）
-  for (const d of [-40, -39, -38]) {
+  for (const day of [6, 7, 8]) {
     const exist = await query(
       `SELECT 1 FROM classes WHERE coach_id=1 AND start_at >= $1 AND start_at <= $2`,
-      [classTs(d, 0), classTs(d, 23, 59)]
+      [classTsOn(prevMonthDay(day), 0), classTsOn(prevMonthDay(day), 23, 59)]
     );
     if (exist.rows.length === 0) {
       const r = await query(
         `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
          VALUES('杠铃塑形',1,4,$1,$2,12,1,'finished') RETURNING id`,
-        [classTs(d, 12), classTs(d, 13)]
+        [classTsOn(prevMonthDay(day), 12), classTsOn(prevMonthDay(day), 13)]
       );
       classIds.push(r.rows[0].id);
     }
@@ -284,16 +296,16 @@ export async function seedData() {
   await query(`UPDATE membership_cards SET remaining=1, status='active' WHERE card_no='VIP2026016'`);
 
   // 9.6 请假与改派样例
-  // (a) 上月：王磊(id=1) 请假 3 天。窗口内第一节课不改派（结算时落入"请假不计费"），其余改派给合规教练
+  // (a) 上月：王磊(id=1) 5~8 号请假。窗口内第一节课不改派（结算时落入"请假不计费"），其余改派给合规教练
   const lv = await query(
     `INSERT INTO coach_leaves(coach_id, start_at, end_at, reason) VALUES(1,$1,$2,'家中有事') RETURNING id`,
-    [classTs(-40, 0), classTs(-38, 23, 59)]
+    [classTsOn(prevMonthDay(5), 0), classTsOn(prevMonthDay(8), 23, 59)]
   );
   const leaveId = lv.rows[0].id;
   const affected = await query(
     `SELECT * FROM classes WHERE coach_id=1 AND status='finished'
        AND start_at >= $1 AND start_at <= $2 ORDER BY start_at`,
-    [classTs(-40, 0), classTs(-38, 23, 59)]
+    [classTsOn(prevMonthDay(5), 0), classTsOn(prevMonthDay(8), 23, 59)]
   );
   for (let i = 1; i < affected.rows.length; i++) {
     const cls = affected.rows[i];

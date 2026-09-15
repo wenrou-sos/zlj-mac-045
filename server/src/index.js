@@ -74,5 +74,6 @@ async function init() {
 }
 
 process.on('SIGINT', async () => { await closeDb(); process.exit(0); });
+process.on('SIGTERM', async () => { await closeDb(); process.exit(0); });
 
 init().catch((e) => { console.error(e); process.exit(1); });

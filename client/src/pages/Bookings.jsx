@@ -38,11 +38,12 @@ export default function Bookings() {
 
   async function cancel(b) {
     const hours = (new Date(b.start_at) - Date.now()) / 3600e3;
-    const refundTip = hours >= 2 ? '将退还 1 次课' : '距开课不足 2 小时，取消不退次';
+    const n = b.cost_sessions || 1;
+    const refundTip = hours >= 2 ? `将退还 ${n} 次课` : `距开课不足 2 小时，取消不退 ${n} 次课`;
     if (!confirm(`确定取消 ${b.member_name} 的「${b.title}」预约吗？\n${refundTip}`)) return;
     try {
       const r = await api.post(`/bookings/${b.id}/cancel`, {});
-      notify(r.refund ? '已取消并退还课次' : '已取消（不退次）', 'success');
+      notify(r.refund ? `已取消并退还 ${r.refund_sessions ?? n} 次课` : '已取消（不退次）', 'success');
       load();
     } catch (e) { notify(e.message, 'error'); }
   }

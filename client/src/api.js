@@ -37,14 +37,22 @@ export function fmtTime(d) {
 export function weekdayCN(d) {
   return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date(d).getDay()];
 }
+// ---- 日历日期工具（一律按浏览器本地日期，禁止用 toISOString().slice() 造成时区差一天）----
+function localISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 export function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return localISO(new Date());
 }
 export function addDaysStr(base, n) {
   const d = new Date(base + 'T00:00:00');
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  return localISO(d);
 }
+// 把「本地日历日期 + 小时」转成 ISO（带正确的本地时区偏移），用于提交给后端的 TIMESTAMPTZ
 export function isoAt(dateStr, hh, mm = 0) {
   return new Date(`${dateStr}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00`).toISOString();
 }
@@ -53,6 +61,10 @@ export function isoAddHours(dateStr, hh, addHours) {
   const base = new Date(`${dateStr}T00:00:00`);
   base.setMinutes(hh * 60 + Math.round(addHours * 60));
   return base.toISOString();
+}
+// 把后端返回的时间戳转成「本地日历日期 YYYY-MM-DD」，用于按天分组
+export function localDateOf(d) {
+  return localISO(new Date(d));
 }
 
 // 会员卡状态 -> 展示

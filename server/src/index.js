@@ -3,7 +3,7 @@ import cors from 'cors';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { query, execSql, closeDb, DB_MODE } from './db.js';
+import { query, execSql, closeDb, dbReady, DB_MODE } from './db.js';
 import { seedData } from './seed.js';
 
 import dashboardRouter from './routes/dashboard.js';
@@ -49,6 +49,7 @@ app.use((err, req, res, next) => {
 });
 
 async function init() {
+  await dbReady;
   // 建表
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await execSql(schema);

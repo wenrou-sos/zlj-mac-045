@@ -1,19 +1,31 @@
 // 生成本地样例数据（可重复执行：先清空再生成）
 import { query } from './db.js';
 
-function daysFromNow(n) {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() + n);
-  return d;
+// 统一按业务时区（默认东八区）取墙上日历日期，避免部署在 UTC 服务器时整体差一天
+const APP_TZ = process.env.APP_TZ || 'Asia/Shanghai';
+const dateFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: APP_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+});
+function todayInTz() {
+  // en-CA 输出形如 YYYY-MM-DD
+  return dateFmt.format(new Date());
 }
 function dateStr(n) {
-  return daysFromNow(n).toISOString().slice(0, 10);
+  const [y, m, d] = todayInTz().split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + n));
+  return dt.toISOString().slice(0, 10);
 }
+// 课程时间统一按业务时区墙上时钟生成（如 19:00 就是本地 19:00）
 function classTs(dayOffset, hh, mm = 0) {
-  const d = daysFromNow(dayOffset);
-  d.setHours(hh, mm, 0, 0);
-  return d.toISOString();
+  const day = dateStr(dayOffset);
+  const H = String(hh).padStart(2, '0');
+  const M = String(mm).padStart(2, '0');
+  // APP_TZ 默认东八区；非东八区时退化为 UTC 偏移由数据库解释
+  const offset = APP_TZ === 'Asia/Shanghai' ? '+08:00' : 'Z';
+  return `${day}T${H}:${M}:00${offset}`;
+}
+function weekdayOf(dayOffset) {
+  return new Date(`${dateStr(dayOffset)}T00:00:00+08:00`).getUTCDay();
 }
 const randInt = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 const pick = (arr) => arr[randInt(0, arr.length - 1)];
@@ -131,7 +143,7 @@ export async function seedData() {
   for (let d = -7; d <= 14; d++) {
     for (let coachId = 1; coachId <= 6; coachId++) {
       // 教练每周休息一天（id 偏移）
-      if (new Date(daysFromNow(d)).getDay() === (coachId % 7)) continue;
+      if (weekdayOf(d) === (coachId % 7)) continue;
       const [st, et, type] = pick(shifts);
       await query(
         `INSERT INTO coach_schedules(coach_id, work_date, start_time, end_time, shift_type)
@@ -142,10 +154,11 @@ export async function seedData() {
   }
 
   // 8. 课表：过去 5 天 ~ 未来 10 天，每天 3~5 节
+  // [课程, 教练, 场地, 容量, 消耗课次]
   const classTemplates = [
-    ['动感单车', 3, 1, 20], ['阴瑜伽', 2, 2, 15], ['晨间 HIIT', 3, 3, 20],
-    ['搏击操', 4, 3, 20], ['自由力量进阶', 1, 4, 12], ['核心普拉提', 2, 2, 15],
-    ['功能性训练', 6, 3, 16], ['水中有氧', 5, 5, 18], ['杠铃塑形', 1, 4, 12],
+    ['动感单车', 3, 1, 20, 1], ['阴瑜伽', 2, 2, 15, 1], ['晨间 HIIT', 3, 3, 20, 1],
+    ['搏击操', 4, 3, 20, 1], ['自由力量进阶', 1, 4, 12, 2], ['核心普拉提', 2, 2, 15, 2],
+    ['功能性训练', 6, 3, 16, 1], ['水中有氧', 5, 5, 18, 1], ['杠铃塑形', 1, 4, 12, 1],
   ];
   const hours = [9, 10, 14, 16, 19];
   const classIds = [];
@@ -153,11 +166,11 @@ export async function seedData() {
     const count = randInt(3, 5);
     const chosenHours = [...hours].sort(() => Math.random() - 0.5).slice(0, count).sort((a, b) => a - b);
     for (const h of chosenHours) {
-      const [title, coachId, venueId, cap] = pick(classTemplates);
+      const [title, coachId, venueId, cap, cost] = pick(classTemplates);
       const r = await query(
         `INSERT INTO classes(title, coach_id, venue_id, start_at, end_at, capacity, cost_sessions, status)
-         VALUES($1,$2,$3,$4,$5,$6,1,$7) RETURNING id`,
-        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, d < -1 ? 'finished' : 'open']
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+        [title, coachId, venueId, classTs(d, h), classTs(d, h + 1), cap, cost, d < -1 ? 'finished' : 'open']
       );
       classIds.push(r.rows[0].id);
     }
@@ -170,29 +183,30 @@ export async function seedData() {
   const memberIds = Array.from({ length: 18 }, (_, i) => i + 1);
   const usedCodes = new Set();
   for (const classId of classIds) {
-    const clsRes = await query('SELECT start_at, capacity, status FROM classes WHERE id=$1', [classId]);
+    const clsRes = await query('SELECT start_at, capacity, cost_sessions, status FROM classes WHERE id=$1', [classId]);
     const cls = clsRes.rows[0];
     if (cls.status === 'canceled') continue;
+    const cost = cls.cost_sessions;
     const isPast = new Date(cls.start_at) < new Date();
     const n = Math.min(cls.capacity, randInt(0, Math.floor(cls.capacity * 0.8)));
     const shuffled = [...memberIds].sort(() => Math.random() - 0.5).slice(0, n);
     for (const memberId of shuffled) {
-      // 取该会员一张有效卡
+      // 取该会员一张有效且次数够的卡（次卡按 cost 扣次）
       const cardRes = await query(
         `SELECT id FROM membership_cards
          WHERE member_id=$1 AND status='active'
            AND (end_date IS NULL OR end_date >= CURRENT_DATE)
-           AND (remaining IS NULL OR remaining > 0)
+           AND (remaining IS NULL OR remaining >= $2)
          LIMIT 1`,
-        [memberId]
+        [memberId, cost]
       );
       if (cardRes.rows.length === 0) continue;
       const cardId = cardRes.rows[0].id;
-      // 次卡模拟已扣次
+      // 次卡模拟已扣次（按课程消耗课次）
       await query(
-        `UPDATE membership_cards SET remaining = GREATEST(remaining - 1, 0)
+        `UPDATE membership_cards SET remaining = GREATEST(remaining - $2, 0)
          WHERE id=$1 AND remaining IS NOT NULL`,
-        [cardId]
+        [cardId, cost]
       );
       let code;
       do { code = String(randInt(100000, 999999)); } while (usedCodes.has(code));
@@ -215,12 +229,12 @@ export async function seedData() {
           [classId, memberId, cardId, code, status, checkedAt,
             status === 'canceled' ? new Date().toISOString() : null]
         );
-        // 取消则退还次数
+        // 取消则按课程消耗课次退还
         if (status === 'canceled') {
           await query(
-            `UPDATE membership_cards SET remaining = LEAST(remaining + 1, total_sessions)
+            `UPDATE membership_cards SET remaining = LEAST(remaining + $2, total_sessions)
              WHERE id=$1 AND remaining IS NOT NULL`,
-            [cardId]
+            [cardId, cost]
           );
         }
       } catch (e) {

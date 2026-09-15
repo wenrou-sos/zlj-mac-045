@@ -9,24 +9,29 @@ import pg from 'pg';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const connectionString = process.env.DATABASE_URL;
+// 业务按本地日历（默认东八区）计算“今天/到期日”，避免部署在 UTC 服务器时跨天差一天
+const APP_TZ = process.env.APP_TZ || 'Asia/Shanghai';
 
-let mode;
 let engine;
 let pool;
 
+const mode = connectionString ? 'postgres' : 'pglite';
+export const DB_MODE = mode;
+
 if (connectionString) {
-  mode = 'postgres';
   pool = new pg.Pool({ connectionString });
+  // 每个连接固定会话时区
+  pool.on('connect', (client) => client.query(`SET TIME ZONE '${APP_TZ}'`));
   engine = {
     query: (text, params) => pool.query(text, params),
   };
 } else {
-  mode = 'pglite';
   const dataDir = process.env.PGLITE_DATA_DIR || path.join(__dirname, '..', '.pglite-data');
   engine = new PGlite(dataDir);
 }
 
-export const DB_MODE = mode;
+// 启动时先把会话时区设好（PGlite 为单连接，设置后全程生效）
+export const dbReady = engine.query(`SET TIME ZONE '${APP_TZ}'`);
 
 export async function query(text, params) {
   return engine.query(text, params);

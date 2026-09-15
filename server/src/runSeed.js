@@ -2,10 +2,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSql, closeDb } from './db.js';
+import { execSql, closeDb, dbReady } from './db.js';
 import { seedData } from './seed.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+await dbReady;
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 await execSql(schema);
 const counts = await seedData();

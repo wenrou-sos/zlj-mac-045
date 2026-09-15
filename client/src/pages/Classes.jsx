@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours } from '../api.js';
+import { api, fmtTime, weekdayCN, todayStr, addDaysStr, isoAt, isoAddHours, localDateOf } from '../api.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
@@ -16,7 +16,7 @@ export default function Classes() {
   const [detailBookings, setDetailBookings] = useState([]);
   const [form, setForm] = useState({
     title: TITLES[0], coach_id: '', venue_id: '', date: todayStr(),
-    hour: 19, duration: 1, capacity: 10,
+    hour: 19, duration: 1, capacity: 10, cost_sessions: 1,
   });
 
   const from = useMemo(() => addDaysStr(todayStr(), -7), []);
@@ -39,7 +39,7 @@ export default function Classes() {
         start_at: isoAt(form.date, form.hour),
         end_at: isoAddHours(form.date, form.hour, Number(form.duration)),
         capacity: Number(form.capacity),
-        cost_sessions: 1,
+        cost_sessions: Number(form.cost_sessions) || 1,
       });
       notify('排课成功（已校验教练与场地冲突）', 'success');
       setShowCreate(false);
@@ -64,7 +64,7 @@ export default function Classes() {
 
   const selectedDate = addDaysStr(todayStr(), dayOffset);
   const dayList = list
-    .filter((c) => new Date(c.start_at).toISOString().slice(0, 10) === selectedDate)
+    .filter((c) => localDateOf(c.start_at) === selectedDate)
     .sort((a, b) => new Date(a.start_at) - new Date(b.start_at));
 
   return (
@@ -151,6 +151,13 @@ export default function Classes() {
             </label>
             <label className="field">容量（人）
               <input type="number" value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} /></label>
+            <label className="field">消耗课次
+              <select value={form.cost_sessions} onChange={(e) => setForm({ ...form, cost_sessions: Number(e.target.value) })}>
+                <option value={1}>1 次 / 人</option>
+                <option value={2}>2 次 / 人</option>
+                <option value={3}>3 次 / 人</option>
+              </select>
+            </label>
           </div>
           <div className="form-actions">
             <button className="btn" onClick={() => setShowCreate(false)}>取消</button>

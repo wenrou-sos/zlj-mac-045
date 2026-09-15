@@ -101,7 +101,7 @@ router.post('/:id/cancel', async (req, res, next) => {
   try {
     const result = await withTransaction(async (tx) => {
       const b = (await tx.query(`
-        SELECT b.*, cl.start_at FROM bookings b JOIN classes cl ON cl.id=b.class_id
+        SELECT b.*, cl.start_at, cl.cost_sessions FROM bookings b JOIN classes cl ON cl.id=b.class_id
         WHERE b.id=$1 FOR UPDATE`, [req.params.id])).rows[0];
       if (!b) throw Object.assign(new Error('预约不存在'), { status: 404 });
       if (b.status !== 'booked') throw Object.assign(new Error('当前状态不可取消'), { status: 409 });
@@ -112,15 +112,15 @@ router.post('/:id/cancel', async (req, res, next) => {
       const refund = hours >= 2;
       if (refund && b.card_id) {
         await tx.query(
-          `UPDATE membership_cards SET remaining = LEAST(COALESCE(remaining,0) + 1, total_sessions)
-           WHERE id=$1 AND remaining IS NOT NULL`, [b.card_id]
+          `UPDATE membership_cards SET remaining = LEAST(COALESCE(remaining,0) + $2, total_sessions)
+           WHERE id=$1 AND remaining IS NOT NULL`, [b.card_id, b.cost_sessions]
         );
       }
       await tx.query(
         `UPDATE bookings SET status='canceled', canceled_at=now(), cancel_reason=$2 WHERE id=$1`,
-        [b.id, req.body.reason || (refund ? '会员取消' : '临期取消（不足2小时，不退次）')]
+        [b.id, req.body.reason || (refund ? `会员取消（退还 ${b.cost_sessions} 次）` : `临期取消（不足2小时，不退 ${b.cost_sessions} 次）`)]
       );
-      return { refund, refund_sessions: refund ? 1 : 0 };
+      return { refund, refund_sessions: refund ? b.cost_sessions : 0 };
     });
     res.json({ ok: true, ...result });
   } catch (e) {

@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS equipment (
   maintain_interval_days INTEGER,            -- 保养周期（天），为空表示不提醒
   last_maintained_at     DATE                -- 上次保养日期
 );
+-- 老库升级：表已存在时 CREATE TABLE IF NOT EXISTS 不会补列，需显式幂等补齐
+ALTER TABLE equipment ADD COLUMN IF NOT EXISTS maintain_interval_days INTEGER; -- 保养周期（天）
+ALTER TABLE equipment ADD COLUMN IF NOT EXISTS last_maintained_at DATE;        -- 上次保养日期
 
 -- 维修工单：一台器械同一时间只允许存在一张未完成（待派单/维修中）的工单
 CREATE TABLE IF NOT EXISTS repair_orders (
@@ -105,6 +108,10 @@ CREATE TABLE IF NOT EXISTS classes (
   status        VARCHAR(10) DEFAULT 'open',  -- open / canceled / finished
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+-- 老库升级：补齐排课所需器械字段（required_equipment_id 的外键约束随列一起添加）
+ALTER TABLE classes ADD COLUMN IF NOT EXISTS
+  required_equipment_id INTEGER REFERENCES equipment(id) ON DELETE SET NULL;
+ALTER TABLE classes ADD COLUMN IF NOT EXISTS required_quantity INTEGER DEFAULT 0;
 
 -- 预约
 CREATE TABLE IF NOT EXISTS bookings (

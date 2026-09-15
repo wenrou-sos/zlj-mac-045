@@ -66,6 +66,48 @@ CREATE TABLE IF NOT EXISTS coach_schedules (
   UNIQUE (coach_id, work_date, start_time)
 );
 
+-- 周课模板：记录每周固定开的团课（星期几 + 开课时间 + 时长 + 教练/场地/容量/消耗课次）
+CREATE TABLE IF NOT EXISTS class_templates (
+  id               SERIAL PRIMARY KEY,
+  title            VARCHAR(80) NOT NULL,
+  weekday          SMALLINT NOT NULL,          -- 0=周日 ... 6=周六
+  start_time       VARCHAR(5) NOT NULL,        -- "19:00"
+  duration_minutes INTEGER NOT NULL DEFAULT 60,
+  coach_id         INTEGER REFERENCES coaches(id) ON DELETE SET NULL,
+  venue_id         INTEGER REFERENCES venues(id) ON DELETE SET NULL,
+  capacity         INTEGER NOT NULL DEFAULT 10,
+  cost_sessions    INTEGER NOT NULL DEFAULT 1, -- 每人消耗课次
+  status           VARCHAR(10) DEFAULT 'active', -- active / inactive
+  created_at       TIMESTAMPTZ DEFAULT now()
+);
+
+-- 模板批量生成批次（一次“选连续几周生成”就是一条批次，支持整批撤回）
+CREATE TABLE IF NOT EXISTS class_generation_batches (
+  id             SERIAL PRIMARY KEY,
+  week_start     DATE NOT NULL,               -- 本次生成的周一
+  week_end       DATE NOT NULL,               -- 最后一个周日
+  weeks          INTEGER NOT NULL,
+  created_count  INTEGER NOT NULL DEFAULT 0,
+  existing_count INTEGER NOT NULL DEFAULT 0,
+  skipped_count  INTEGER NOT NULL DEFAULT 0,
+  result_json    JSONB,                       -- 新增/已存在/跳过明细（含跳过原因）
+  status         VARCHAR(10) DEFAULT 'completed', -- completed / revoked
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  revoked_at     TIMESTAMPTZ
+);
+
+-- 场地不可用时段：可表示某天全天闭馆（00:00-23:59）或某段时间不可用（如场地维护）
+CREATE TABLE IF NOT EXISTS venue_unavailable (
+  id          SERIAL PRIMARY KEY,
+  venue_id    INTEGER NOT NULL REFERENCES venues(id) ON DELETE CASCADE,
+  start_date  DATE NOT NULL,
+  end_date    DATE NOT NULL,                  -- 可跨多天
+  start_time  VARCHAR(5) NOT NULL DEFAULT '00:00',
+  end_time    VARCHAR(5) NOT NULL DEFAULT '23:59',
+  reason      VARCHAR(255),
+  created_at  TIMESTAMPTZ DEFAULT now()
+);
+
 -- 课表（排课）：某天某时段的一节课
 CREATE TABLE IF NOT EXISTS classes (
   id            SERIAL PRIMARY KEY,
@@ -77,8 +119,16 @@ CREATE TABLE IF NOT EXISTS classes (
   capacity      INTEGER NOT NULL DEFAULT 10,
   cost_sessions INTEGER NOT NULL DEFAULT 1, -- 消耗课次
   status        VARCHAR(10) DEFAULT 'open',  -- open / canceled / finished
+  template_id   INTEGER REFERENCES class_templates(id) ON DELETE SET NULL, -- 来自哪个周课模板
+  generation_batch_id INTEGER REFERENCES class_generation_batches(id) ON DELETE SET NULL, -- 由哪个批次生成
   created_at    TIMESTAMPTZ DEFAULT now()
 );
+
+-- 幂等保证：同一个模板在同一时刻只能有一节“未取消”的课
+-- （重复生成不会排出两套；已取消的课不占位，允许重新补排）
+CREATE UNIQUE INDEX IF NOT EXISTS uq_class_template_occurrence
+  ON classes(template_id, start_at)
+  WHERE template_id IS NOT NULL AND status <> 'canceled';
 
 -- 预约
 CREATE TABLE IF NOT EXISTS bookings (
@@ -122,7 +172,22 @@ CREATE TABLE IF NOT EXISTS reminders (
 );
 
 CREATE INDEX IF NOT EXISTS idx_classes_start ON classes(start_at);
+CREATE INDEX IF NOT EXISTS idx_classes_batch ON classes(generation_batch_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+CREATE INDEX IF NOT EXISTS idx_venue_unavailable ON venue_unavailable(venue_id, start_date, end_date);
+
+-- ---- 幂等迁移：给旧版库补充周课模板相关字段（PGlite / PostgreSQL 通用）----
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='classes' AND column_name='template_id') THEN
+    ALTER TABLE classes ADD COLUMN template_id INTEGER REFERENCES class_templates(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_name='classes' AND column_name='generation_batch_id') THEN
+    ALTER TABLE classes ADD COLUMN generation_batch_id INTEGER REFERENCES class_generation_batches(id) ON DELETE SET NULL;
+  END IF;
+END $$;

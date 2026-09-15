@@ -37,6 +37,75 @@ router.put('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ---- 场地不可用时段（全天闭馆 / 部分时段维护，排课时自动跳过）----
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// 列表：?venue_id= （默认返回全部）
+router.get('/unavailable/all', async (req, res, next) => {
+  try {
+    const { venue_id } = req.query;
+    const r = await query(`
+      SELECT u.id, u.venue_id, v.name AS venue_name,
+        to_char(u.start_date,'YYYY-MM-DD') AS start_date,
+        to_char(u.end_date,'YYYY-MM-DD') AS end_date,
+        u.start_time, u.end_time, u.reason, u.created_at
+      FROM venue_unavailable u JOIN venues v ON v.id=u.venue_id
+      ${venue_id ? 'WHERE u.venue_id=$1' : ''}
+      ORDER BY u.start_date DESC, u.start_time DESC`, venue_id ? [venue_id] : []);
+    res.json(r.rows);
+  } catch (e) { next(e); }
+});
+
+router.post('/unavailable', async (req, res, next) => {
+  try {
+    const venue_id = Number(req.body.venue_id);
+    const { start_date, end_date, reason } = req.body;
+    const start_time = req.body.start_time || '00:00';
+    const end_time = req.body.end_time || '23:59';
+    if (!venue_id || !start_date || !end_date) {
+      return res.status(400).json({ error: '场地和起止日期必填' });
+    }
+    if (!DATE_RE.test(start_date) || !DATE_RE.test(end_date) || end_date < start_date) {
+      return res.status(400).json({ error: '日期不合法或结束日期早于开始日期' });
+    }
+    if (!TIME_RE.test(start_time) || !TIME_RE.test(end_time)) {
+      return res.status(400).json({ error: '时间格式应为 HH:MM' });
+    }
+    if (start_date === end_date && start_time >= end_time) {
+      return res.status(400).json({ error: '结束时间必须晚于开始时间' });
+    }
+    const r = await query(
+      `INSERT INTO venue_unavailable(venue_id, start_date, end_date, start_time, end_time, reason)
+       VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [venue_id, start_date, end_date, start_time, end_time, reason || null]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) { next(e); }
+});
+
+router.put('/unavailable/:id', async (req, res, next) => {
+  try {
+    const { venue_id, start_date, end_date, start_time, end_time, reason } = req.body;
+    if (start_date === end_date && start_time >= end_time) {
+      return res.status(400).json({ error: '结束时间必须晚于开始时间' });
+    }
+    const r = await query(
+      `UPDATE venue_unavailable SET venue_id=$1, start_date=$2, end_date=$3, start_time=$4,
+         end_time=$5, reason=$6 WHERE id=$7 RETURNING *`,
+      [venue_id, start_date, end_date, start_time || '00:00', end_time || '23:59', reason || null, req.params.id]
+    );
+    res.json(r.rows[0]);
+  } catch (e) { next(e); }
+});
+
+router.delete('/unavailable/:id', async (req, res, next) => {
+  try {
+    await query(`DELETE FROM venue_unavailable WHERE id=$1`, [req.params.id]);
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
 // 器械列表（?venue_id= &status=）
 router.get('/equipment/all', async (req, res, next) => {
   try {

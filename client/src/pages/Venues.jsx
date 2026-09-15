@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react';
-import { api, fmtDate, EQUIP_STATUS } from '../api.js';
+import { api, fmtDate, todayStr, EQUIP_STATUS } from '../api.js';
 import { notify } from '../notify.js';
 import Modal from '../components/Modal.jsx';
 
 export default function Venues() {
   const [venues, setVenues] = useState([]);
   const [equipment, setEquipment] = useState([]);
+  const [unavailable, setUnavailable] = useState([]);
   const [venueModal, setVenueModal] = useState(null);
   const [equipModal, setEquipModal] = useState(null);
+  const [unavailModal, setUnavailModal] = useState(null);
   const [venueForm, setVenueForm] = useState({ name: '', capacity: 10, location: '' });
   const [equipForm, setEquipForm] = useState({ name: '', asset_no: '', quantity: 1, status: 'normal', venue_id: '', purchased_at: '', note: '' });
+  const [unavailForm, setUnavailForm] = useState({ venue_id: '', start_date: todayStr(), end_date: todayStr(), all_day: true, start_time: '08:00', end_time: '12:00', reason: '' });
   const [filter, setFilter] = useState('');
 
   const load = async () => {
     setVenues(await api.get('/venues'));
     setEquipment(await api.get('/venues/equipment/all'));
+    setUnavailable(await api.get('/venues/unavailable/all'));
   };
   useEffect(() => { load(); }, []);
 
@@ -53,6 +57,31 @@ export default function Venues() {
     load();
   }
 
+  async function saveUnavail() {
+    try {
+      const f = unavailForm;
+      const body = {
+        venue_id: Number(f.venue_id),
+        start_date: f.start_date, end_date: f.end_date,
+        start_time: f.all_day ? '00:00' : f.start_time,
+        end_time: f.all_day ? '23:59' : f.end_time,
+        reason: f.reason || (f.all_day ? '场地全天关闭' : '场地时段不可用'),
+      };
+      if (unavailModal.mode === 'create') await api.post('/venues/unavailable', body);
+      else await api.put(`/venues/unavailable/${unavailModal.u.id}`, body);
+      notify('不可用时段已保存，排课将自动跳过', 'success');
+      setUnavailModal(null);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+
+  async function removeUnavail(u) {
+    if (!confirm(`删除「${u.venue_name} ${u.start_date}」的不可用记录？`)) return;
+    await api.del(`/venues/unavailable/${u.id}`);
+    notify('已删除', 'success');
+    load();
+  }
+
   const shown = equipment.filter((e) => !filter || e.status === filter);
 
   return (
@@ -87,6 +116,49 @@ export default function Venues() {
                   </td>
                 </tr>
               ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>🚫 不可用时段（全天闭馆 / 部分时段维护）
+          <button className="btn sm primary" style={{ marginLeft: 'auto' }}
+            onClick={() => { setUnavailForm({ venue_id: venues[0]?.id || '', start_date: todayStr(), end_date: todayStr(), all_day: true, start_time: '08:00', end_time: '12:00', reason: '' }); setUnavailModal({ mode: 'create' }); }}>
+            + 登记不可用
+          </button>
+        </h3>
+        <div className="muted" style={{ fontSize: 12.5, marginBottom: 10 }}>
+          落在该时段的课（含按周课模板批量生成）会被自动跳过并说明原因；可登记跨多天的全天闭馆。
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>场地</th><th>开始</th><th>结束</th><th>时段</th><th>类型</th><th>原因</th><th></th></tr></thead>
+            <tbody>
+              {unavailable.map((u) => {
+                const allDay = u.start_time === '00:00' && (u.end_time === '23:59' || u.end_time === '24:00');
+                const multiDay = u.start_date !== u.end_date;
+                return (
+                  <tr key={u.id}>
+                    <td style={{ fontWeight: 600 }}>{u.venue_name}</td>
+                    <td className="nowrap">{u.start_date}</td>
+                    <td className="nowrap">{u.end_date}</td>
+                    <td className="mono">{allDay ? '全天' : `${u.start_time} - ${u.end_time}`}</td>
+                    <td><span className={`badge ${allDay && !multiDay ? 'danger' : 'warn'}`}>
+                      {allDay ? (multiDay ? '连续闭馆' : '当天闭馆') : '部分时段'}
+                    </span></td>
+                    <td className="muted" style={{ fontSize: 12 }}>{u.reason || '—'}</td>
+                    <td className="nowrap">
+                      <button className="btn sm" onClick={() => {
+                        setUnavailForm({ venue_id: u.venue_id, start_date: u.start_date, end_date: u.end_date, all_day: allDay, start_time: u.start_time === '00:00' ? '08:00' : u.start_time, end_time: u.end_time === '23:59' ? '12:00' : u.end_time, reason: u.reason || '' });
+                        setUnavailModal({ mode: 'edit', u });
+                      }}>编辑</button>
+                      <button className="btn sm danger" style={{ marginLeft: 6 }} onClick={() => removeUnavail(u)}>删除</button>
+                    </td>
+                  </tr>
+                );
+              })}
+              {unavailable.length === 0 && <tr><td colSpan={7} className="empty">暂无不可用时段</td></tr>}
             </tbody>
           </table>
         </div>
@@ -150,6 +222,45 @@ export default function Venues() {
           <div className="form-actions">
             <button className="btn" onClick={() => setVenueModal(null)}>取消</button>
             <button className="btn primary" onClick={saveVenue}>保存</button>
+          </div>
+        </Modal>
+      )}
+
+      {unavailModal && (
+        <Modal title={unavailModal.mode === 'create' ? '登记场地不可用' : '编辑不可用时段'} onClose={() => setUnavailModal(null)}>
+          <div className="form-grid">
+            <label className="field">场地
+              <select value={unavailForm.venue_id} onChange={(e) => setUnavailForm({ ...unavailForm, venue_id: e.target.value })}>
+                {venues.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+            </label>
+            <label className="field">类型
+              <select value={unavailForm.all_day ? 'all' : 'part'} onChange={(e) => setUnavailForm({ ...unavailForm, all_day: e.target.value === 'all' })}>
+                <option value="all">全天关闭</option>
+                <option value="part">部分时段不可用</option>
+              </select>
+            </label>
+            <label className="field">开始日期
+              <input type="date" value={unavailForm.start_date} onChange={(e) => setUnavailForm({ ...unavailForm, start_date: e.target.value, end_date: unavailForm.end_date < e.target.value ? e.target.value : unavailForm.end_date })} /></label>
+            <label className="field">结束日期
+              <input type="date" min={unavailForm.start_date} value={unavailForm.end_date} onChange={(e) => setUnavailForm({ ...unavailForm, end_date: e.target.value })} /></label>
+            {!unavailForm.all_day && (
+              <>
+                <label className="field">开始时间
+                  <input type="time" value={unavailForm.start_time} onChange={(e) => setUnavailForm({ ...unavailForm, start_time: e.target.value })} /></label>
+                <label className="field">结束时间
+                  <input type="time" value={unavailForm.end_time} onChange={(e) => setUnavailForm({ ...unavailForm, end_time: e.target.value })} /></label>
+              </>
+            )}
+            <label className="field" style={{ gridColumn: '1/-1' }}>原因（如：消防检修 / 地面保养）
+              <input value={unavailForm.reason} onChange={(e) => setUnavailForm({ ...unavailForm, reason: e.target.value })} /></label>
+          </div>
+          <div className="muted" style={{ fontSize: 12.5, marginTop: 8 }}>
+            开始、结束日期可不同，跨多天时中间各天按全天关闭处理。
+          </div>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setUnavailModal(null)}>取消</button>
+            <button className="btn primary" onClick={saveUnavail}>保存</button>
           </div>
         </Modal>
       )}

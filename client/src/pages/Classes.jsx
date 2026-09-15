@@ -91,9 +91,12 @@ export default function Classes() {
             <div key={c.id} className={`class-card ${c.status === 'canceled' ? 'canceled' : new Date(c.start_at) < new Date() ? 'finished' : ''}`}>
               <div className="title">
                 <span>{fmtTime(c.start_at)} - {fmtTime(c.end_at)} {c.title}</span>
-                {c.status === 'canceled' && <span className="badge danger">已取消</span>}
-                {c.status === 'finished' && <span className="badge muted">已结束</span>}
-                {full && c.status === 'open' && <span className="badge warn">满员</span>}
+                <span style={{ display: 'flex', gap: 4 }}>
+                  {c.template_title && <span className="badge info" title={`来自周课模板：${c.template_title}`}>🧩模板</span>}
+                  {c.status === 'canceled' && <span className="badge danger">已取消</span>}
+                  {c.status === 'finished' && <span className="badge muted">已结束</span>}
+                  {full && c.status === 'open' && <span className="badge warn">满员</span>}
+                </span>
               </div>
               <div className="meta">
                 <span>🏋️ {c.coach_name || '待定教练'}</span>

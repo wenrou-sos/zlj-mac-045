@@ -32,7 +32,8 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
   // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
+  await query(`TRUNCATE reminders, renewals, bookings, classes, class_generation_batches,
+    class_templates, venue_unavailable, coach_schedules,
     equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
 
   // 2. 教练
@@ -133,6 +134,40 @@ export async function seedData() {
       [vid, name, asset, qty, status, dateStr(pOff)]
     );
   }
+
+  // 6.5 周课模板：每周固定开的团课（星期几 0=周日，时长分钟）
+  // [课程, 星期几, 开课, 时长, 教练, 场地, 容量, 消耗课次]
+  const weeklyTemplates = [
+    ['晨间 HIIT', 1, '09:00', 60, 3, 3, 20, 1],
+    ['阴瑜伽', 1, '19:00', 60, 2, 2, 15, 1],
+    ['动感单车', 2, '19:00', 60, 3, 1, 20, 1],
+    ['核心普拉提', 2, '10:00', 60, 2, 2, 15, 2],
+    ['功能性训练', 3, '19:00', 60, 6, 3, 16, 1],
+    ['杠铃塑形', 4, '19:00', 60, 1, 4, 12, 1],
+    ['搏击操', 5, '19:00', 60, 4, 3, 20, 1],
+    ['水中有氧', 6, '10:00', 60, 5, 5, 18, 1],
+    ['动感单车', 6, '15:00', 45, 3, 1, 20, 1],
+  ];
+  for (const [title, wd, st, dur, coachId, venueId, cap, cost] of weeklyTemplates) {
+    await query(
+      `INSERT INTO class_templates(title, weekday, start_time, duration_minutes, coach_id, venue_id, capacity, cost_sessions)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [title, wd, st, dur, coachId, venueId, cap, cost]
+    );
+  }
+
+  // 6.6 场地不可用时段：综合操厅明天（周三）全天闭馆维护，正好命中周三的「功能性训练」；
+  //     瑜伽室下周二上午部分时段不可用，命中第二周周二 10:00 的「核心普拉提」
+  await query(
+    `INSERT INTO venue_unavailable(venue_id, start_date, end_date, start_time, end_time, reason)
+     VALUES($1,$2,$2,'00:00','23:59',$3)`,
+    [3, dateStr(1), '场馆消防检修，全天闭馆']
+  );
+  await query(
+    `INSERT INTO venue_unavailable(venue_id, start_date, end_date, start_time, end_time, reason)
+     VALUES($1,$2,$2,'08:00','12:00',$3)`,
+    [2, dateStr(7), '瑜伽室地面保养']
+  );
 
   // 7. 教练排班：最近 7 天 ~ 未来 14 天
   const shifts = [
@@ -272,7 +307,7 @@ export async function seedData() {
   );
 
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders','class_templates','venue_unavailable']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

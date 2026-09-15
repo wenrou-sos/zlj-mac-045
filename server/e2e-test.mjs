@@ -107,15 +107,25 @@ r = await api(`/cards/${periodCard.id}/renew`, {
 check('期限卡续费延长 30 天', r.status === 200 && !!r.data.new_end_date, JSON.stringify(r.data));
 
 // 12. 多课次课程：新建一节 cost=2 的课，约课 -> 整课取消，应退 2 次（不能只退 1）
+//     选 14 天后的时段（样例数据只生成到 +10 天，避免随机课程占用场地），
+//     并在 coach/venue 上多试几次以防冲突
 {
-  const futureDate = new Date(Date.now() + 4 * 86400e3);
+  const futureDate = new Date(Date.now() + 14 * 86400e3);
   const pad = (n) => String(n).padStart(2, '0');
-  const startIso = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}T02:00:00Z`;
-  const endIso = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}T03:00:00Z`;
-  const { data: newClass } = await api('/classes', {
-    method: 'POST',
-    body: { title: '私教小班(2课次)', coach_id: 1, venue_id: 4, start_at: startIso, end_at: endIso, capacity: 6, cost_sessions: 2 },
-  });
+  const day = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}`;
+  let newClass = null;
+  for (const hour of [2, 4, 6]) {
+    for (const venueId of [4, 5, 2, 3, 1]) {
+      const r = await api('/classes', {
+        method: 'POST',
+        body: { title: '私教小班(2课次)', coach_id: 1, venue_id: venueId,
+          start_at: `${day}T${pad(hour)}:00:00Z`, end_at: `${day}T${pad(hour + 1)}:00:00Z`,
+          capacity: 6, cost_sessions: 2 },
+      });
+      if (r.status === 201) { newClass = r.data; break; }
+    }
+    if (newClass) break;
+  }
   check('创建 cost=2 课程成功', !!newClass?.id, JSON.stringify(newClass));
   const { data: freshCards } = await api('/cards?status=active');
   const mc = freshCards.find((x) => x.card_type === 'count' && x.remaining >= 6);

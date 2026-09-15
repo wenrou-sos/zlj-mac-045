@@ -8,6 +8,7 @@ import Members from './pages/Members.jsx';
 import MemberDetail from './pages/MemberDetail.jsx';
 import Cards from './pages/Cards.jsx';
 import Classes from './pages/Classes.jsx';
+import ClassTemplates from './pages/ClassTemplates.jsx';
 import Bookings from './pages/Bookings.jsx';
 import Coaches from './pages/Coaches.jsx';
 import Schedules from './pages/Schedules.jsx';
@@ -39,6 +40,7 @@ const nav = [
   { to: '/reminders', label: '续费提醒', icon: '🔔', badge: true },
   { group: '课程与教练' },
   { to: '/classes', label: '课表排课', icon: '📅' },
+  { to: '/class-templates', label: '周课模板', icon: '🧩' },
   { to: '/bookings', label: '预约管理', icon: '📝' },
   { to: '/coaches', label: '教练管理', icon: '🏋️' },
   { to: '/schedules', label: '教练排班', icon: '⏰' },
@@ -81,6 +83,7 @@ export default function App() {
           <Route path="/cards" element={<Cards />} />
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/classes" element={<Classes />} />
+          <Route path="/class-templates" element={<ClassTemplates />} />
           <Route path="/bookings" element={<Bookings />} />
           <Route path="/coaches" element={<Coaches />} />
           <Route path="/schedules" element={<Schedules />} />

@@ -126,3 +126,58 @@ CREATE INDEX IF NOT EXISTS idx_bookings_member ON bookings(member_id);
 CREATE INDEX IF NOT EXISTS idx_bookings_class ON bookings(class_id);
 CREATE INDEX IF NOT EXISTS idx_cards_member ON membership_cards(member_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_date ON coach_schedules(work_date);
+
+-- ---------- 会员标签 / 分群 / 跟进事项 ----------
+
+-- 标签（由店长维护）
+CREATE TABLE IF NOT EXISTS tags (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(30) UNIQUE NOT NULL,
+  color       VARCHAR(16) NOT NULL DEFAULT '#4ea8fc',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS member_tags (
+  member_id   INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  tag_id      INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (member_id, tag_id)
+);
+
+-- 常用分群：条件以 JSONB 保存，形如
+-- [{"field":"card_expiring","days":7}, {"field":"has_tag","tag_id":3}]
+-- field 取值：card_expiring / card_expired / low_sessions / no_visit / has_tag
+CREATE TABLE IF NOT EXISTS segments (
+  id          SERIAL PRIMARY KEY,
+  name        VARCHAR(50) UNIQUE NOT NULL,
+  description VARCHAR(255),
+  conditions  JSONB NOT NULL,
+  created_by  VARCHAR(50) NOT NULL DEFAULT '店长',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 跟进事项：pending 待跟进 / contacted 已联系 / renewed 已续费 / invalid 无效
+CREATE TABLE IF NOT EXISTS follow_ups (
+  id            SERIAL PRIMARY KEY,
+  member_id     INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  segment_id    INTEGER REFERENCES segments(id) ON DELETE SET NULL,
+  title         VARCHAR(100) NOT NULL,
+  content       VARCHAR(500),
+  status        VARCHAR(10) NOT NULL DEFAULT 'pending',
+  assignee      VARCHAR(50) NOT NULL DEFAULT '前台',   -- 指派人（交给谁处理）
+  creator       VARCHAR(50) NOT NULL DEFAULT '店长',   -- 创建人
+  due_date      DATE,                                  -- 应跟进日期
+  result_note   VARCHAR(500),                          -- 跟进结论
+  handler       VARCHAR(50),                           -- 最近处理人
+  auto_closed   BOOLEAN NOT NULL DEFAULT false,        -- 续费/开卡自动结束
+  closed_reason VARCHAR(255),                          -- 自动结束原因
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  contacted_at  TIMESTAMPTZ,
+  closed_at     TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_followups_member ON follow_ups(member_id);
+CREATE INDEX IF NOT EXISTS idx_followups_status ON follow_ups(status);
+-- 同一会员同一时间只允许一条未结束（pending/contacted）的跟进，避免重复打扰
+CREATE UNIQUE INDEX IF NOT EXISTS uq_followup_open
+  ON follow_ups(member_id) WHERE status IN ('pending','contacted');

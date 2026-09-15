@@ -110,12 +110,18 @@ check('期限卡续费延长 30 天', r.status === 200 && !!r.data.new_end_date,
 {
   const futureDate = new Date(Date.now() + 4 * 86400e3);
   const pad = (n) => String(n).padStart(2, '0');
-  const startIso = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}T02:00:00Z`;
-  const endIso = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}T03:00:00Z`;
-  const { data: newClass } = await api('/classes', {
-    method: 'POST',
-    body: { title: '私教小班(2课次)', coach_id: 1, venue_id: 4, start_at: startIso, end_at: endIso, capacity: 6, cost_sessions: 2 },
-  });
+  const day = `${futureDate.getUTCFullYear()}-${pad(futureDate.getUTCMonth() + 1)}-${pad(futureDate.getUTCDate())}`;
+  // 种子课表是随机排的，固定时段可能撞上场地/教练冲突；逐个时段重试直到排课成功
+  let newClass = null;
+  for (const h of [2, 5, 8, 11, 14, 17, 20, 23]) {
+    const res = await api('/classes', {
+      method: 'POST',
+      body: { title: '私教小班(2课次)', coach_id: 1, venue_id: 4,
+        start_at: `${day}T${pad(h)}:00:00Z`, end_at: `${day}T${pad(h + 1)}:00:00Z`,
+        capacity: 6, cost_sessions: 2 },
+    });
+    if (res.status === 201) { newClass = res.data; break; }
+  }
   check('创建 cost=2 课程成功', !!newClass?.id, JSON.stringify(newClass));
   const { data: freshCards } = await api('/cards?status=active');
   const mc = freshCards.find((x) => x.card_type === 'count' && x.remaining >= 6);

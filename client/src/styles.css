@@ -271,3 +271,110 @@ label.field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px
 .chart-bars .lab { font-size: 11px; color: var(--text2); }
 .legend { display: flex; gap: 16px; font-size: 12px; color: var(--text2); }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+
+/* ---------- 标签 / 分群 / 跟进 ---------- */
+.tag-chip {
+  --tc: var(--info);
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--tc) 16%, transparent);
+  color: var(--tc);
+  border: 1px solid color-mix(in srgb, var(--tc) 40%, transparent);
+}
+.tag-manage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 8px 3px 10px;
+}
+.link-btn {
+  background: none; border: none; color: var(--text2); cursor: pointer;
+  font-size: 11.5px; padding: 0 2px; font-weight: 600;
+}
+.link-btn:hover { color: var(--text); }
+.link-btn.danger { color: var(--danger); }
+.tag-pick {
+  --tc: var(--info);
+  border-radius: 20px; padding: 6px 14px; cursor: pointer; font-size: 13px;
+  background: var(--panel2); color: var(--text2);
+  border: 1px solid var(--border);
+}
+.tag-pick.on {
+  background: color-mix(in srgb, var(--tc) 18%, transparent);
+  color: var(--tc);
+  border-color: var(--tc);
+  font-weight: 700;
+}
+
+.segment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+.segment-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 15px;
+  cursor: pointer;
+  border-left: 3px solid var(--accent);
+  transition: .15s;
+}
+.segment-card:hover { border-color: #445060; }
+.segment-card.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.seg-title { font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+.seg-conds { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cond-chip {
+  font-size: 11.5px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--text);
+}
+.cond-chip .and { color: var(--accent); margin-right: 5px; font-weight: 700; }
+.seg-desc { font-size: 12px; margin-top: 8px; }
+.seg-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; font-size: 12.5px; }
+.seg-ops { display: inline-flex; gap: 6px; }
+
+.cond-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.cond-row select { min-width: 150px; }
+
+tr.row-open td { background: rgba(242,85,85,.05); }
+tr.row-open:hover td { background: rgba(242,85,85,.1); }
+
+/* ---------- 角色切换 ---------- */
+.role-box {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.role-title { font-size: 11px; color: #5c6878; letter-spacing: 1px; margin-bottom: 8px; }
+.role-switch { display: flex; background: var(--panel2); border-radius: 8px; padding: 3px; gap: 3px; }
+.role-switch button {
+  flex: 1; border: none; background: transparent; color: var(--text2);
+  padding: 6px 0; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 700;
+}
+.role-switch button.on { background: var(--accent); color: #14180d; }
+.role-hint { font-size: 11px; color: var(--text2); margin-top: 8px; line-height: 1.5; }
+.nav-badge.follow { background: var(--warn); color: #1a1206; }

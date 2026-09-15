@@ -32,8 +32,9 @@ const pick = (arr) => arr[randInt(0, arr.length - 1)];
 
 export async function seedData() {
   // 1. 清空
-  await query(`TRUNCATE reminders, renewals, bookings, classes, coach_schedules,
-    equipment, venues, membership_cards, members, coaches RESTART IDENTITY CASCADE`);
+  await query(`TRUNCATE follow_ups, segments, member_tags, tags, reminders, renewals,
+    bookings, classes, coach_schedules, equipment, venues, membership_cards, members, coaches
+    RESTART IDENTITY CASCADE`);
 
   // 2. 教练
   const coaches = [
@@ -271,8 +272,87 @@ export async function seedData() {
        )`
   );
 
+  // 11. 标签、会员打标（由店长维护）
+  const tagDefs = [
+    ['企业客户', '#c6f135'],
+    ['高价值', '#35d07f'],
+    ['沉睡会员', '#f5a524'],
+    ['意向续费', '#4ea8fc'],
+    ['重点维护', '#f25555'],
+  ];
+  const tagIds = {};
+  for (const [name, color] of tagDefs) {
+    const r = await query(`INSERT INTO tags(name, color) VALUES($1,$2) RETURNING id`, [name, color]);
+    tagIds[name] = r.rows[0].id;
+  }
+  // 企业客户：1、5、7、15；沉睡（很久没到店）：4、7、11、14；意向续费：2、3、9、16
+  const memberTagMap = {
+    [tagIds['企业客户']]: [1, 5, 7, 15],
+    [tagIds['高价值']]: [1, 8, 15],
+    [tagIds['沉睡会员']]: [4, 7, 11, 14],
+    [tagIds['意向续费']]: [2, 3, 9, 16],
+    [tagIds['重点维护']]: [1, 2],
+  };
+  for (const [tid, mids] of Object.entries(memberTagMap)) {
+    for (const mid of mids) {
+      await query(`INSERT INTO member_tags(member_id, tag_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+        [mid, tid]);
+    }
+  }
+
+  // 12. 常用分群（条件 JSONB，可多条 AND 组合）
+  const segmentDefs = [
+    ['即将到期', '7 天内到期的期限卡会员，优先电话续费',
+      [{ field: 'card_expiring', days: 7 }]],
+    ['次数不足', '有效次卡剩余 ≤ 3 次',
+      [{ field: 'low_sessions', sessions: 3 }]],
+    ['很久没到店', '超过 30 天没有到店核销记录',
+      [{ field: 'no_visit', days: 30 }]],
+    ['企业客户', '标记为企业客户的会员，用于对公续约',
+      [{ field: 'has_tag', tag_id: tagIds['企业客户'] }]],
+    ['沉睡且已过期', '很久没到店且卡已过期，重点召回',
+      [{ field: 'no_visit', days: 30 }, { field: 'card_expired' }]],
+    ['企业客户·次数不足', '企业客户中次卡即将用完',
+      [{ field: 'has_tag', tag_id: tagIds['企业客户'] }, { field: 'low_sessions', sessions: 3 }]],
+  ];
+  for (const [name, description, conditions] of segmentDefs) {
+    await query(
+      `INSERT INTO segments(name, description, conditions, created_by)
+       VALUES($1,$2,$3,'店长')`,
+      [name, description, JSON.stringify(conditions)]
+    );
+  }
+
+  // 13. 示例跟进事项（交给前台处理；续费后会自动结束）
+  const seg = await query(`SELECT id, name FROM segments ORDER BY id`);
+  const segId = (name) => seg.rows.find((s) => s.name === name)?.id || null;
+  const demoFollowUps = [
+    [2, '即将到期', '【即将到期】回访跟进', '季卡即将到期，电话介绍年卡优惠', dateStr(3)],
+    [4, '沉睡且已过期', '【沉睡且已过期】召回跟进', '卡已过期且久未到店，尝试召回', dateStr(1)],
+    [10, null, '续费意向确认', '到店咨询过半年卡，下周再联系', dateStr(5)],
+  ];
+  for (const [mid, segName, title, content, due] of demoFollowUps) {
+    try {
+      await query(
+        `INSERT INTO follow_ups(member_id, segment_id, title, content, due_date, assignee, creator)
+         VALUES($1,$2,$3,$4,$5,'前台','店长')`,
+        [mid, segName ? segId(segName) : null, title, content, due]
+      );
+    } catch (e) {
+      // 唯一冲突（已有未结束跟进）忽略
+    }
+  }
+  // 一条已经处理完的历史跟进，展示结论与处理人
+  await query(
+    `INSERT INTO follow_ups(member_id, segment_id, title, content, status, result_note, handler,
+       creator, contacted_at, closed_at)
+     VALUES($1,$2,$3,$4,'contacted',$5,$6,'店长', now()-INTERVAL '2 days', now()-INTERVAL '1 day')`,
+    [3, segId('次数不足'), '【次数不足】回访跟进', '次卡仅剩 2 次', '会员说本周到店续卡', '前台']
+  );
+
   const counts = {};
-  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules','classes','bookings','reminders']) {
+  for (const t of ['coaches','members','membership_cards','venues','equipment','coach_schedules',
+    'classes','bookings','reminders','tags','member_tags','segments','follow_ups']) {
     counts[t] = (await query(`SELECT count(*)::int AS n FROM ${t}`)).rows[0].n;
   }
   return counts;

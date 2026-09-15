@@ -35,7 +35,9 @@ npm run seed         # 随时重置样例数据
 | 模块 | 功能点 |
 | --- | --- |
 | 📊 工作台 | 核心指标（会员数/今日课程/核销数/到期数…）、近 7 天开课核销趋势、今日待核销、待处理提醒 |
-| 👤 会员管理 | 会员档案、搜索、新增/编辑、会员卡与预约历史 |
+| 👤 会员管理 | 会员档案、搜索、新增/编辑、**会员标签**、会员卡与预约历史、**历次跟进结论** |
+| 🎯 会员分群 | 店长维护标签与分群（即将到期/已过期/次数不足/久未到店/标签，多条件 AND 组合）、命中预览、**CSV 导出**、**一键生成待跟进** |
+| 📞 跟进事项 | 分群名单生成回访待办，前台标记**待跟进/已联系/已续费/无效**并记录结论；**续费或续卡后自动结束**，不再挂在列表；逾期高亮 |
 | 💳 会员卡 | 开卡（月/季/半年/年卡、10~50 次卡）、续费（延期/加次）、冻结/解冻、续费记录 |
 | 📅 课表排课 | 按天查看课表、排课自动校验**教练冲突、场地冲突、场地容量上限、场地开放状态**；整节课取消并批量退次 |
 | 📝 预约管理 | 代客约课，自动选卡、**次卡预扣次数**、满员/重复/过期卡拦截；取消预约按规则退次 |
@@ -53,6 +55,9 @@ npm run seed         # 随时重置样例数据
 - **核销**：6 位核销码 + 2 小时时间窗 + 会员卡有效（期限卡未过期、次卡有余量）+ 防重复。
 - **续费**：期限卡未过期从原到期日顺延、已过期从当天顺延；次卡增加次数并自动恢复有效；写入续费流水并关闭对应提醒。
 - **自动状态**：查询时自动把到期的期限卡置为 `expired`、次数耗尽的次卡置为 `used_up`，并增量生成提醒（不会重复打扰）。
+- **会员标签与分群**：标签与分群由店长维护；分群条件存 JSONB，运行时拼成参数化 SQL，支持多条件 AND（即将到期 / 已过期 / 剩余次数不足 / N 天未到店 / 拥有标签）。
+- **跟进事项**：一键按分群批量生成，已有未结束跟进的会员通过部分唯一索引自动跳过（不重复打扰）；前台可推进状态并写结论；会员续费/续卡（含重新开卡）在同一事务内把其 `pending/contacted` 跟进自动置为 `renewed` 并记录原因。
+- **权限（演示）**：侧栏可切换 **店长 / 前台** 角色（存 localStorage，随 `X-Role` 请求头上送，服务端强制校验）。店长维护标签、分群并生成跟进；前台只能使用现成分群、导出名单、更新跟进状态，不能改写标签/分群。接真实登录时只需把 `server/src/rbac.js` 的 `roleOf` 换成鉴权中间件。
 
 ## 样例数据
 
@@ -71,6 +76,15 @@ node server/e2e-test.mjs
 ```
 GET  /api/dashboard/stats | /trend        工作台统计与趋势
 GET/POST /api/members      GET/PUT /api/members/:id
+                           PUT  /api/members/:id/tags       会员打标签（店长）
+                           POST /api/members/:id/follow-ups 手工建跟进（店长）
+GET/POST/PUT/DELETE /api/tags                会员标签（写操作限店长）
+GET/POST/PUT/DELETE /api/segments            分群（写操作限店长）
+POST /api/segments/preview                   条件试算命中人数
+GET  /api/segments/:id/members | /export     命中名单 / 导出 CSV
+POST /api/segments/:id/generate-followups    一键生成待跟进（店长）
+GET  /api/follow-ups | /counts               跟进列表 / 角标计数
+POST /api/follow-ups/:id/status              更新跟进状态/结论
 GET/POST /api/cards        POST /api/cards/:id/renew | /freeze
                            GET  /api/cards/renewals/list
 GET/POST /api/coaches      PUT  /api/coaches/:id

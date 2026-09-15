@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, fmtDate, fmtDateTime, CARD_STATUS, BOOKING_STATUS, todayStr, addDaysStr } from '../api.js';
+import { api, fmtDate, fmtDateTime, CARD_STATUS, BOOKING_STATUS, FOLLOWUP_STATUS, todayStr, addDaysStr } from '../api.js';
 import { notify } from '../notify.js';
+import { useRole } from '../role.js';
+import { TagChip } from './Segments.jsx';
 import Modal from '../components/Modal.jsx';
 
 const PLANS = [
@@ -17,7 +19,15 @@ const PLANS = [
 
 export default function MemberDetail() {
   const { id } = useParams();
+  const manager = useRole() === 'manager';
   const [m, setM] = useState(null);
+  const [allTags, setAllTags] = useState([]);
+  const [tagEditing, setTagEditing] = useState(false);
+  const [chosenTags, setChosenTags] = useState([]);
+  const [manualFollow, setManualFollow] = useState(false);
+  const [followForm, setFollowForm] = useState({
+    title: '', content: '', assignee: '前台', due_date: addDaysStr(todayStr(), 3),
+  });
   const [openCard, setOpenCard] = useState(false);
   const [renewCard, setRenewCard] = useState(null);
   const [planIdx, setPlanIdx] = useState(0);
@@ -27,9 +37,34 @@ export default function MemberDetail() {
   const [renewForm, setRenewForm] = useState({ amount: 0, extend_days: 30, add_sessions: 10 });
 
   const load = () => api.get(`/members/${id}`).then(setM);
-  useEffect(() => { load(); }, [id]);
+  useEffect(() => {
+    load();
+    api.get('/tags').then(setAllTags).catch(() => {});
+  }, [id]);
 
   if (!m) return <div className="empty">加载中…</div>;
+
+  function openTagEditor() {
+    setChosenTags((m.tags || []).map((t) => t.id));
+    setTagEditing(true);
+  }
+  async function saveTags() {
+    try {
+      await api.put(`/members/${id}/tags`, { tag_ids: chosenTags });
+      notify('标签已更新', 'success');
+      setTagEditing(false);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
+  async function submitManualFollow() {
+    if (!followForm.title.trim()) return notify('请填写跟进标题', 'error');
+    try {
+      await api.post(`/members/${id}/follow-ups`, followForm);
+      notify('待跟进已创建', 'success');
+      setManualFollow(false);
+      load();
+    } catch (e) { notify(e.message, 'error'); }
+  }
 
   async function submitOpenCard() {
     const p = PLANS[planIdx];
@@ -88,6 +123,16 @@ export default function MemberDetail() {
       <div className="page-sub">{m.gender} · 入会于 {fmtDate(m.joined_at)}{m.note ? ` · ${m.note}` : ''}</div>
 
       <div className="panel">
+        <h3>🏷️ 标签
+          {manager && <button className="btn sm" style={{ marginLeft: 'auto' }} onClick={openTagEditor}>编辑标签</button>}
+        </h3>
+        <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+          {(m.tags || []).map((t) => <TagChip key={t.id} tag={t} />)}
+          {(!m.tags || m.tags.length === 0) && <span className="muted">暂无标签</span>}
+        </span>
+      </div>
+
+      <div className="panel">
         <h3>💳 会员卡
           <button className="btn sm primary" style={{ marginLeft: 'auto' }} onClick={() => setOpenCard(true)}>+ 开新卡</button>
         </h3>
@@ -138,6 +183,92 @@ export default function MemberDetail() {
           </table>
         </div>
       </div>
+
+      <div className="panel">
+        <h3>📞 历次跟进
+          {manager && <button className="btn sm primary" style={{ marginLeft: 'auto' }}
+            onClick={() => setManualFollow(true)}>+ 新建跟进</button>}
+        </h3>
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>跟进内容</th><th>来源</th><th>结论</th><th>处理人</th><th>时间</th></tr></thead>
+            <tbody>
+              {(m.followUps || []).map((f) => (
+                <tr key={f.id}>
+                  <td><span className={`badge ${FOLLOWUP_STATUS[f.status]?.cls}`}>{FOLLOWUP_STATUS[f.status]?.text}</span>
+                    {f.auto_closed && <div className="muted" style={{ fontSize: 11 }}>自动结束</div>}</td>
+                  <td style={{ maxWidth: 220 }}>
+                    <div style={{ fontWeight: 600 }}>{f.title}</div>
+                    {f.content && <div className="muted" style={{ fontSize: 12 }}>{f.content}</div>}
+                    {f.due_date && <div className="muted" style={{ fontSize: 11 }}>应跟进 {fmtDate(f.due_date)}</div>}
+                  </td>
+                  <td className="muted">{f.segment_name || '手工创建'}</td>
+                  <td style={{ maxWidth: 220, fontSize: 12.5 }}>
+                    {f.result_note || <span className="muted">—</span>}
+                    {f.auto_closed && f.closed_reason && <div className="muted" style={{ fontSize: 11 }}>{f.closed_reason}</div>}
+                  </td>
+                  <td className="muted">{f.handler || '—'}</td>
+                  <td className="muted nowrap" style={{ fontSize: 11.5 }}>
+                    创 {fmtDateTime(f.created_at)}
+                    {f.contacted_at && <div>联 {fmtDateTime(f.contacted_at)}</div>}
+                    {f.closed_at && <div>结 {fmtDateTime(f.closed_at)}</div>}
+                  </td>
+                </tr>
+              ))}
+              {(!m.followUps || m.followUps.length === 0) &&
+                <tr><td colSpan={6} className="empty">暂无跟进记录</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 标签编辑 */}
+      {tagEditing && (
+        <Modal title={`编辑标签 · ${m.name}`} onClose={() => setTagEditing(false)}>
+          <span style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {allTags.map((t) => {
+              const on = chosenTags.includes(t.id);
+              return (
+                <button key={t.id} type="button" className={on ? 'tag-pick on' : 'tag-pick'}
+                  style={{ '--tc': t.color }}
+                  onClick={() => setChosenTags((xs) => on ? xs.filter((x) => x !== t.id) : [...xs, t.id])}>
+                  {t.name}
+                </button>
+              );
+            })}
+            {allTags.length === 0 && <span className="muted">还没有可选标签，请店长先在「会员分群」页创建</span>}
+          </span>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setTagEditing(false)}>取消</button>
+            <button className="btn primary" onClick={saveTags}>保存</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* 手工新建跟进 */}
+      {manualFollow && (
+        <Modal title={`新建跟进 · ${m.name}`} onClose={() => setManualFollow(false)}>
+          <div className="form-grid">
+            <label className="field">跟进标题 *
+              <input value={followForm.title}
+                onChange={(e) => setFollowForm({ ...followForm, title: e.target.value })}
+                placeholder="如：续费意向确认" /></label>
+            <label className="field">指派给
+              <input value={followForm.assignee}
+                onChange={(e) => setFollowForm({ ...followForm, assignee: e.target.value })} /></label>
+            <label className="field">应跟进日期
+              <input type="date" value={followForm.due_date}
+                onChange={(e) => setFollowForm({ ...followForm, due_date: e.target.value })} /></label>
+          </div>
+          <label className="field" style={{ marginTop: 14 }}>跟进说明
+            <textarea rows={3} value={followForm.content}
+              onChange={(e) => setFollowForm({ ...followForm, content: e.target.value })} /></label>
+          <div className="form-actions">
+            <button className="btn" onClick={() => setManualFollow(false)}>取消</button>
+            <button className="btn primary" onClick={submitManualFollow}>创建</button>
+          </div>
+        </Modal>
+      )}
 
       {/* 开卡 */}
       {openCard && (

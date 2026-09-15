@@ -1,7 +1,10 @@
 // API 封装
 async function request(path, options = {}) {
   const res = await fetch(`/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Role': localStorage.getItem('powergym_role') || 'frontdesk',
+    },
     ...options,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
@@ -85,3 +88,33 @@ export const EQUIP_STATUS = {
   maintenance: { text: '维修中', cls: 'warn' },
   scrapped: { text: '已报废', cls: 'muted' },
 };
+export const FOLLOWUP_STATUS = {
+  pending: { text: '待跟进', cls: 'danger' },
+  contacted: { text: '已联系', cls: 'warn' },
+  renewed: { text: '已续费', cls: 'ok' },
+  invalid: { text: '无效', cls: 'muted' },
+};
+
+// 分群条件构造器的字段元数据（与后端 segmentLogic 对齐）
+export const CONDITION_META = {
+  card_expiring: { label: '即将到期', valueLabel: '天内到期', def: 7 },
+  card_expired: { label: '卡已过期', valueLabel: '', def: null },
+  low_sessions: { label: '剩余次数不足', valueLabel: '次及以下', def: 3 },
+  no_visit: { label: '很久没到店', valueLabel: '天未到店', def: 30 },
+  has_tag: { label: '拥有标签', valueLabel: '', def: null, tag: true },
+};
+
+// 把单条条件渲染成中文描述
+export function describeCondition(c, tags = []) {
+  switch (c.field) {
+    case 'card_expiring': return `期限卡 ${c.days} 天内到期`;
+    case 'card_expired': return '卡已过期';
+    case 'low_sessions': return `有效次卡剩余 ≤ ${c.sessions} 次`;
+    case 'no_visit': return `${c.days} 天未到店`;
+    case 'has_tag': {
+      const t = tags.find((x) => x.id === c.tag_id);
+      return `标签：${t ? t.name : `#${c.tag_id}`}`;
+    }
+    default: return c.field;
+  }
+}

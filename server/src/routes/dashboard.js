@@ -12,6 +12,7 @@ router.get('/stats', async (req, res, next) => {
     const [
       members, activeCards, expiringSoon, lowSessions,
       todayClasses, todayBookings, checked, coaches, venuesOpen, maintenance,
+      pendingFollowUps,
     ] = await Promise.all([
       one(`SELECT count(*)::int n FROM members`),
       one(`SELECT count(*)::int n FROM membership_cards WHERE status='active'
@@ -33,6 +34,7 @@ router.get('/stats', async (req, res, next) => {
       one(`SELECT count(*)::int n FROM coaches WHERE status='active'`),
       one(`SELECT count(*)::int n FROM venues WHERE status='open'`),
       one(`SELECT count(*)::int n FROM equipment WHERE status='maintenance'`),
+      one(`SELECT count(*)::int n FROM follow_ups WHERE status='pending'`),
     ]);
     res.json({
       members: members.n,
@@ -45,6 +47,7 @@ router.get('/stats', async (req, res, next) => {
       coaches: coaches.n,
       venuesOpen: venuesOpen.n,
       maintenance: maintenance.n,
+      pendingFollowUps: pendingFollowUps.n,
     });
   } catch (e) { next(e); }
 });

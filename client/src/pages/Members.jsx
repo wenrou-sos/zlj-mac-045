@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, fmtDate } from '../api.js';
 import { notify } from '../notify.js';
+import { TagChip } from './Segments.jsx';
 import Modal from '../components/Modal.jsx';
 
 const empty = { name: '', phone: '', gender: '男', note: '' };
@@ -46,7 +47,7 @@ export default function Members() {
       <div className="panel">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>ID</th><th>姓名</th><th>性别</th><th>手机号</th><th>会员卡</th><th>入会日期</th><th>备注</th><th></th></tr></thead>
+            <thead><tr><th>ID</th><th>姓名</th><th>性别</th><th>手机号</th><th>标签</th><th>会员卡</th><th>入会日期</th><th>备注</th><th></th></tr></thead>
             <tbody>
               {list.map((m) => (
                 <tr key={m.id}>
@@ -54,6 +55,11 @@ export default function Members() {
                   <td style={{ fontWeight: 600 }}>{m.name}</td>
                   <td>{m.gender}</td>
                   <td className="mono">{m.phone}</td>
+                  <td>
+                    <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+                      {(m.tags || []).map((t) => <TagChip key={t.id} tag={t} size="sm" />)}
+                    </span>
+                  </td>
                   <td className="muted">{m.card_nos || '—'}</td>
                   <td>{fmtDate(m.joined_at)}</td>
                   <td className="muted">{m.note || '—'}</td>

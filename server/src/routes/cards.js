@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query, withTransaction } from '../db.js';
 import { refreshCardStatuses, regenerateReminders } from '../reminderLogic.js';
+import { autoCloseByRenewal } from '../followUpLogic.js';
 
 const router = Router();
 
@@ -43,6 +44,8 @@ router.post('/', async (req, res, next) => {
         [member_id, no, plan_name, card_type, price || 0, start_date,
           end_date || null, total_sessions || null, total_sessions || null]
       );
+      // 重新开卡视为续卡：自动结束此前挂起的跟进
+      await autoCloseByRenewal(member_id, `会员新开「${plan_name}」，跟进自动结束`, tx);
       return no;
     });
     res.status(201).json({ card_no: cardNo });
@@ -81,9 +84,9 @@ router.post('/:id/renew', async (req, res, next) => {
         );
         newTotal = r.rows[0].total_sessions;
       }
-      await tx.query(
+      const ins = await tx.query(
         `INSERT INTO renewals(card_id, member_id, amount, new_end_date, added_sessions, operator)
-         VALUES($1,$2,$3,$4,$5,$6)`,
+         VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
         [card.id, card.member_id, amount || 0,
           card.card_type === 'period' ? newEnd : null,
           card.card_type === 'count' ? add_sessions : null,
@@ -93,6 +96,13 @@ router.post('/:id/renew', async (req, res, next) => {
       await tx.query(
         `UPDATE reminders SET status='notified' WHERE card_id=$1 AND status='pending'`,
         [card.id]
+      );
+      // 续费/续卡后自动结束该会员未完成的跟进，不再一直挂在前台列表里
+      const renewId = ins.rows[0].id;
+      await autoCloseByRenewal(
+        card.member_id,
+        `会员续费/续卡（续费记录 #${renewId}），跟进自动结束`,
+        tx
       );
     });
     await regenerateReminders();

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api, fmtTime } from '../api.js';
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState(null);
   const [trend, setTrend] = useState([]);
   const [today, setToday] = useState([]);
@@ -31,6 +32,7 @@ export default function Dashboard() {
     { label: '今日预约 / 已核销', value: `${stats.todayBookings} / ${stats.checkedToday}`, icon: '✅', cls: 'info' },
     { label: '7天内到期', value: stats.expiringSoon, icon: '⏳', cls: 'warn' },
     { label: '次卡余额不足', value: stats.lowSessions, icon: '🔔', cls: 'danger' },
+    { label: '待跟进事项', value: stats.pendingFollowUps ?? 0, icon: '📞', link: '/follow-ups', cls: 'warn' },
     { label: '在岗教练', value: stats.coaches, icon: '🏋️' },
     { label: '开放场地 / 维修器械', value: `${stats.venuesOpen} / ${stats.maintenance}`, icon: '🏟️' },
   ];
@@ -42,7 +44,8 @@ export default function Dashboard() {
 
       <div className="stat-grid">
         {cards.map((c) => (
-          <div key={c.label} className="stat-card">
+          <div key={c.label} className="stat-card" style={c.link ? { cursor: 'pointer' } : undefined}
+            onClick={c.link ? () => navigate(c.link) : undefined}>
             <div className="label">{c.icon} {c.label}</div>
             <div className={`value ${c.cls || ''}`}>{c.value}</div>
           </div>

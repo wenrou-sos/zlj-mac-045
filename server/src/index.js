@@ -16,6 +16,9 @@ import classesRouter from './routes/classes.js';
 import bookingsRouter from './routes/bookings.js';
 import checkinsRouter from './routes/checkins.js';
 import remindersRouter from './routes/reminders.js';
+import tagsRouter from './routes/tags.js';
+import segmentsRouter from './routes/segments.js';
+import followUpsRouter from './routes/followUps.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -34,6 +37,9 @@ app.use('/api/classes', classesRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/checkins', checkinsRouter);
 app.use('/api/reminders', remindersRouter);
+app.use('/api/tags', tagsRouter);
+app.use('/api/segments', segmentsRouter);
+app.use('/api/follow-ups', followUpsRouter);
 
 // 重置样例数据
 app.post('/api/dev/reseed', async (req, res, next) => {
